@@ -22,7 +22,7 @@ ctest --test-dir build
 On Ubuntu/Debian:
 
 ```bash
-sudo apt install cmake g++ libcurl4-openssl-dev libssl-dev
+sudo apt install cmake g++ libcurl4-openssl-dev libssl-dev zlib1g-dev git
 ```
 
 On macOS:
