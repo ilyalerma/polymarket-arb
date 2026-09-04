@@ -36,6 +36,10 @@ struct Config {
   bool scan_moneyline{true};
   bool scan_game_winners{true};
   std::uint32_t event_limit{30};
+
+  bool focus_current_game{true};
+  double game_loser_bid_max{0.12};
+  double game_winner_ask_min{0.95};
 };
 
 Config load_config_from_env();

@@ -3,6 +3,7 @@
 #include "pm/clob_client.hpp"
 #include "pm/config.hpp"
 #include "pm/fee_model.hpp"
+#include "pm/game_state.hpp"
 #include "pm/gamma_client.hpp"
 #include "pm/ws/market_ws.hpp"
 
@@ -17,6 +18,7 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <vector>
 
 namespace {
 
@@ -146,10 +148,133 @@ std::vector<pm::BinaryMarket> load_markets(
   return gamma.fetch_active_markets(config.market_limit);
 }
 
+void print_game_finished(
+    const pm::BinaryMarket& market,
+    const pm::GameResolutionResult& resolution) {
+  std::cout << "\n[" << now_string() << "] GAME FINISHED — "
+            << market_kind_label(market) << " — " << resolution.winner_outcome
+            << " won [" << market.slug << "]\n";
+}
+
+void print_now_watching(const pm::BinaryMarket& market) {
+  std::cout << "[" << now_string() << "] Now watching "
+            << market_kind_label(market) << " [" << market.slug << "]\n";
+}
+
+struct MarketSnapshot {
+  pm::BinaryMarket market;
+  pm::MarketBooks books;
+  pm::GameResolutionResult resolution;
+};
+
+struct GameTracker {
+  std::unordered_map<std::string, pm::GameResolution> resolution_by_slug;
+  std::unordered_map<std::string, std::uint32_t> active_game_by_event;
+};
+
+bool should_scan_for_arb(
+    const pm::Config& config,
+    const pm::BinaryMarket& market,
+    const GameTracker& tracker) {
+  if (market.market_kind != pm::MarketKind::GameWinner) {
+    return true;
+  }
+
+  const auto it = tracker.resolution_by_slug.find(market.slug);
+  if (it != tracker.resolution_by_slug.end() &&
+      it->second != pm::GameResolution::Open) {
+    return false;
+  }
+
+  if (!config.focus_current_game || market.event_slug.empty()) {
+    return true;
+  }
+
+  const auto game_num = pm::parse_game_number(market);
+  if (!game_num) {
+    return true;
+  }
+
+  const auto active_it = tracker.active_game_by_event.find(market.event_slug);
+  if (active_it == tracker.active_game_by_event.end()) {
+    return true;
+  }
+
+  return *game_num == active_it->second;
+}
+
+GameTracker build_game_tracker(
+    const pm::Config& config,
+    const std::vector<MarketSnapshot>& snapshots,
+    GameTracker& previous) {
+  GameTracker tracker;
+  tracker.resolution_by_slug = previous.resolution_by_slug;
+  tracker.active_game_by_event = previous.active_game_by_event;
+
+  std::unordered_map<std::string, std::uint32_t> open_games_by_event;
+
+  for (const auto& snap : snapshots) {
+    if (snap.market.market_kind != pm::MarketKind::GameWinner) {
+      continue;
+    }
+
+    const auto prior_it = tracker.resolution_by_slug.find(snap.market.slug);
+    const auto prior =
+        prior_it == tracker.resolution_by_slug.end() ? pm::GameResolution::Open : prior_it->second;
+
+    tracker.resolution_by_slug[snap.market.slug] = snap.resolution.state;
+
+    if (prior == pm::GameResolution::Open && snap.resolution.state != pm::GameResolution::Open) {
+      print_game_finished(snap.market, snap.resolution);
+    }
+
+    if (snap.resolution.state != pm::GameResolution::Open) {
+      continue;
+    }
+
+    const auto game_num = pm::parse_game_number(snap.market);
+    if (!game_num) {
+      continue;
+    }
+
+    auto& current = open_games_by_event[snap.market.event_slug];
+    if (current == 0 || *game_num < current) {
+      current = *game_num;
+    }
+  }
+
+  for (const auto& [event_slug, game_num] : open_games_by_event) {
+    const auto prev_it = tracker.active_game_by_event.find(event_slug);
+    const std::uint32_t prev_game = prev_it == tracker.active_game_by_event.end() ? 0 : prev_it->second;
+
+    tracker.active_game_by_event[event_slug] = game_num;
+
+    if (config.focus_current_game && prev_game != 0 && game_num != prev_game) {
+      for (const auto& snap : snapshots) {
+        if (snap.market.event_slug == event_slug &&
+            snap.market.market_kind == pm::MarketKind::GameWinner) {
+          const auto num = pm::parse_game_number(snap.market);
+          if (num && *num == game_num) {
+            print_now_watching(snap.market);
+            break;
+          }
+        }
+      }
+    }
+  }
+
+  previous = tracker;
+  return tracker;
+}
+
 void scan_markets(
     const pm::Config& config,
     const std::vector<pm::BinaryMarket>& markets,
-    pm::ClobClient& clob) {
+    pm::ClobClient& clob,
+    GameTracker& game_tracker) {
+  std::vector<MarketSnapshot> snapshots;
+  snapshots.reserve(markets.size());
+
   for (const auto& market : markets) {
     const auto yes_book = clob.fetch_book(market.yes_token_id);
     const auto no_book = clob.fetch_book(market.no_token_id);
@@ -164,16 +289,44 @@ void scan_markets(
     books.yes.update(*yes_book);
     books.no.update(*no_book);
 
+    pm::GameResolutionResult resolution;
+    if (market.market_kind == pm::MarketKind::GameWinner) {
+      resolution = pm::detect_game_resolution(
+          market,
+          books.yes,
+          books.no,
+          config.game_loser_bid_max,
+          config.game_winner_ask_min);
+    }
+
+    snapshots.push_back({market, books, resolution});
+  }
+
+  const auto tracker = build_game_tracker(config, snapshots, game_tracker);
+
+  for (const auto& snap : snapshots) {
+    if (!should_scan_for_arb(config, snap.market, tracker)) {
+      continue;
+    }
+
     if (config.watch_status) {
-      print_market_status(market, books);
+      print_market_status(snap.market, snap.books);
     }
 
     if (auto buy = pm::detect_buy_both_arb(
-            market, books.yes, books.no, config.min_net_edge, config.max_trade_usd)) {
+            snap.market,
+            snap.books.yes,
+            snap.books.no,
+            config.min_net_edge,
+            config.max_trade_usd)) {
       print_opportunity(*buy);
     }
     if (auto sell = pm::detect_sell_both_arb(
-            market, books.yes, books.no, config.min_net_edge, config.max_trade_usd)) {
+            snap.market,
+            snap.books.yes,
+            snap.books.no,
+            config.min_net_edge,
+            config.max_trade_usd)) {
       print_opportunity(*sell);
     }
   }
@@ -199,6 +352,10 @@ void print_startup_banner(
     }
     if (config.lol_live_only) {
       std::cout << "  live events only: yes\n";
+    }
+    if (config.focus_current_game) {
+      std::cout << "  focus current game: yes (loser bid <= " << config.game_loser_bid_max
+                << ", winner ask >= " << config.game_winner_ask_min << ")\n";
     }
   }
 
@@ -294,19 +451,21 @@ int main(int argc, char** argv) {
   }
 
   if (config.use_websocket && markets.size() == 1) {
+    GameTracker game_tracker;
     pm::MarketWs ws(
         config,
         markets,
         [](const pm::ArbOpportunity& opp) { print_opportunity(opp); });
     ws.start();
     while (g_running) {
-      scan_markets(config, markets, clob);
+      scan_markets(config, markets, clob, game_tracker);
       std::this_thread::sleep_for(std::chrono::milliseconds(config.poll_interval_ms));
     }
     ws.stop();
     return 0;
   }
 
+  GameTracker game_tracker;
   while (g_running) {
     if (config.lol_discover || !config.event_slug.empty()) {
       try {
@@ -315,7 +474,7 @@ int main(int argc, char** argv) {
         std::cerr << "Market refresh failed: " << ex.what() << '\n';
       }
     }
-    scan_markets(config, markets, clob);
+    scan_markets(config, markets, clob, game_tracker);
     std::this_thread::sleep_for(std::chrono::milliseconds(config.poll_interval_ms));
   }
 

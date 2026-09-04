@@ -36,6 +36,7 @@ add_library(pm_core
   src/ws/market_ws.cpp
   src/config.cpp
   src/benchmark.cpp
+  src/game_state.cpp
 )
 
 target_include_directories(pm_core
@@ -65,3 +66,6 @@ target_link_libraries(pm_test_arb PRIVATE pm_core)
 target_link_libraries(pm_test_fee PRIVATE pm_core)
 add_test(NAME pm_test_arb COMMAND pm_test_arb)
 add_test(NAME pm_test_fee COMMAND pm_test_fee)
+add_executable(pm_test_game_state tests/test_game_state.cpp)
+target_link_libraries(pm_test_game_state PRIVATE pm_core)
+add_test(NAME pm_test_game_state COMMAND pm_test_game_state)
