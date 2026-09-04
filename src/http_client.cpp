@@ -90,6 +90,14 @@ std::optional<std::string> HttpClient::post(
     const std::string& path,
     const std::string& body,
     const std::map<std::string, std::string>& headers) const {
+  return post(path, body.data(), body.size(), headers);
+}
+
+std::optional<std::string> HttpClient::post(
+    const std::string& path,
+    const char* body,
+    std::size_t body_len,
+    const std::map<std::string, std::string>& headers) const {
   CURL* curl = curl_easy_init();
   if (curl == nullptr) {
     return std::nullopt;
@@ -106,7 +114,8 @@ std::optional<std::string> HttpClient::post(
 
   curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
   curl_easy_setopt(curl, CURLOPT_POST, 1L);
-  curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body.c_str());
+  curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body);
+  curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, static_cast<long>(body_len));
   curl_easy_setopt(curl, CURLOPT_HTTPHEADER, header_list);
   curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
   curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);

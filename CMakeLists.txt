@@ -5,6 +5,27 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+  set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+endif()
+
+option(PM_NATIVE_OPTIMIZE "Enable -march=native for release builds" ON)
+option(PM_ENABLE_LTO "Enable link-time optimization for release builds" ON)
+
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+  add_compile_options(
+    $<$<CONFIG:Release>:-O3>
+    $<$<CONFIG:Release>:-DNDEBUG>
+  )
+  if(PM_NATIVE_OPTIMIZE)
+    add_compile_options($<$<CONFIG:Release>:-march=native>)
+  endif()
+  if(PM_ENABLE_LTO)
+    add_compile_options($<$<CONFIG:Release>:-flto>)
+    add_link_options($<$<CONFIG:Release>:-flto>)
+  endif()
+endif()
+
 include(FetchContent)
 
 FetchContent_Declare(
@@ -34,9 +55,12 @@ add_library(pm_core
   src/arb_engine.cpp
   src/auth/l2_auth.cpp
   src/ws/market_ws.cpp
+  src/ws/book_updates.cpp
   src/config.cpp
   src/benchmark.cpp
   src/game_state.cpp
+  src/order_chamber.cpp
+  src/market_tracker.cpp
 )
 
 target_include_directories(pm_core
@@ -69,3 +93,9 @@ add_test(NAME pm_test_fee COMMAND pm_test_fee)
 add_executable(pm_test_game_state tests/test_game_state.cpp)
 target_link_libraries(pm_test_game_state PRIVATE pm_core)
 add_test(NAME pm_test_game_state COMMAND pm_test_game_state)
+add_executable(pm_test_order_book tests/test_order_book.cpp)
+target_link_libraries(pm_test_order_book PRIVATE pm_core)
+add_test(NAME pm_test_order_book COMMAND pm_test_order_book)
+add_executable(pm_test_order_chamber tests/test_order_chamber.cpp)
+target_link_libraries(pm_test_order_chamber PRIVATE pm_core)
+add_test(NAME pm_test_order_chamber COMMAND pm_test_order_chamber)

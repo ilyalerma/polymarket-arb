@@ -6,6 +6,7 @@
 #include "pm/types.hpp"
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace pm {
@@ -19,6 +20,15 @@ struct LatencyStats {
   std::uint32_t samples{0};
 };
 
+struct BookUpdateBenchmarkResult {
+  LatencyStats apply_level_us;
+  LatencyStats parse_and_apply_us;
+  LatencyStats incremental_pipeline_us;
+  LatencyStats rest_refetch_ms;
+  LatencyStats rest_plus_arb_ms;
+  std::uint32_t iterations{0};
+};
+
 struct DryRunBenchmarkResult {
   LatencyStats gamma_lookup;
   LatencyStats book_yes;
@@ -26,6 +36,8 @@ struct DryRunBenchmarkResult {
   LatencyStats books_parallel;
   LatencyStats arb_detect;
   LatencyStats order_build;
+  LatencyStats chamber_aim;
+  LatencyStats chamber_fire;
   LatencyStats l2_auth;
   LatencyStats post_order_dry;
   LatencyStats total_sequential;
@@ -41,5 +53,14 @@ DryRunBenchmarkResult run_dry_trade_benchmark(
     ClobClient& clob);
 
 void print_benchmark_result(const DryRunBenchmarkResult& result, const BinaryMarket& market);
+
+BookUpdateBenchmarkResult run_book_update_benchmark(
+    const Config& config,
+    const BinaryMarket& market,
+    ClobClient& clob);
+
+void print_book_update_benchmark_result(
+    const BookUpdateBenchmarkResult& result,
+    const BinaryMarket& market);
 
 }  // namespace pm

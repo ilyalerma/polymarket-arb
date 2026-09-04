@@ -1,10 +1,13 @@
 #include "pm/arb_engine.hpp"
+#include "pm/auth/l2_auth.hpp"
 #include "pm/benchmark.hpp"
 #include "pm/clob_client.hpp"
 #include "pm/config.hpp"
 #include "pm/fee_model.hpp"
 #include "pm/game_state.hpp"
 #include "pm/gamma_client.hpp"
+#include "pm/market_tracker.hpp"
+#include "pm/order_chamber.hpp"
 #include "pm/ws/market_ws.hpp"
 
 #include <atomic>
@@ -13,6 +16,8 @@
 #include <ctime>
 #include <iomanip>
 #include <iostream>
+#include <unordered_map>
+#include <unordered_set>
 #include <regex>
 #include <stdexcept>
 #include <string>
@@ -148,132 +153,52 @@ std::vector<pm::BinaryMarket> load_markets(
   return gamma.fetch_active_markets(config.market_limit);
 }
 
-void print_game_finished(
-    const pm::BinaryMarket& market,
-    const pm::GameResolutionResult& resolution) {
-  std::cout << "\n[" << now_string() << "] GAME FINISHED — "
-            << market_kind_label(market) << " — " << resolution.winner_outcome
-            << " won [" << market.slug << "]\n";
-}
-
-void print_now_watching(const pm::BinaryMarket& market) {
-  std::cout << "[" << now_string() << "] Now watching "
-            << market_kind_label(market) << " [" << market.slug << "]\n";
-}
-
-struct MarketSnapshot {
-  pm::BinaryMarket market;
-  pm::MarketBooks books;
-  pm::GameResolutionResult resolution;
-};
-
-struct GameTracker {
-  std::unordered_map<std::string, pm::GameResolution> resolution_by_slug;
-  std::unordered_map<std::string, std::uint32_t> active_game_by_event;
-};
-
-bool should_scan_for_arb(
+void try_fire_arb(
     const pm::Config& config,
-    const pm::BinaryMarket& market,
-    const GameTracker& tracker) {
-  if (market.market_kind != pm::MarketKind::GameWinner) {
-    return true;
+    pm::ClobClient& clob,
+    pm::OrderChamberRegistry& chambers,
+    const pm::ArbOpportunity& opp) {
+  auto* chamber = chambers.chamber_for(opp.market.slug, opp.kind);
+  if (!chamber) {
+    return;
   }
 
-  const auto it = tracker.resolution_by_slug.find(market.slug);
-  if (it != tracker.resolution_by_slug.end() &&
-      it->second != pm::GameResolution::Open) {
-    return false;
+  chamber->aim(opp);
+  if (!config.live_trading) {
+    return;
   }
 
-  if (!config.focus_current_game || market.event_slug.empty()) {
-    return true;
+  const auto salt = pm::next_order_salt();
+  const auto timestamp_ms = pm::current_timestamp_ms();
+  pm::FiredShot shot;
+  if (!chamber->fire_into(shot, opp.max_size, salt, timestamp_ms)) {
+    return;
   }
 
-  const auto game_num = pm::parse_game_number(market);
-  if (!game_num) {
-    return true;
-  }
+  const auto post_leg = [&](const pm::LegBodyBuffer& body) {
+    const auto headers = pm::auth::build_l2_headers(
+        config.wallet_address,
+        config.api_key,
+        config.api_secret,
+        config.api_passphrase,
+        "POST",
+        "/order",
+        body.data,
+        body.size);
+    (void)clob.post_order(body.data, body.size, headers);
+  };
 
-  const auto active_it = tracker.active_game_by_event.find(market.event_slug);
-  if (active_it == tracker.active_game_by_event.end()) {
-    return true;
-  }
-
-  return *game_num == active_it->second;
-}
-
-GameTracker build_game_tracker(
-    const pm::Config& config,
-    const std::vector<MarketSnapshot>& snapshots,
-    GameTracker& previous) {
-  GameTracker tracker;
-  tracker.resolution_by_slug = previous.resolution_by_slug;
-  tracker.active_game_by_event = previous.active_game_by_event;
-
-  std::unordered_map<std::string, std::uint32_t> open_games_by_event;
-
-  for (const auto& snap : snapshots) {
-    if (snap.market.market_kind != pm::MarketKind::GameWinner) {
-      continue;
-    }
-
-    const auto prior_it = tracker.resolution_by_slug.find(snap.market.slug);
-    const auto prior =
-        prior_it == tracker.resolution_by_slug.end() ? pm::GameResolution::Open : prior_it->second;
-
-    tracker.resolution_by_slug[snap.market.slug] = snap.resolution.state;
-
-    if (prior == pm::GameResolution::Open && snap.resolution.state != pm::GameResolution::Open) {
-      print_game_finished(snap.market, snap.resolution);
-    }
-
-    if (snap.resolution.state != pm::GameResolution::Open) {
-      continue;
-    }
-
-    const auto game_num = pm::parse_game_number(snap.market);
-    if (!game_num) {
-      continue;
-    }
-
-    auto& current = open_games_by_event[snap.market.event_slug];
-    if (current == 0 || *game_num < current) {
-      current = *game_num;
-    }
-  }
-
-  for (const auto& [event_slug, game_num] : open_games_by_event) {
-    const auto prev_it = tracker.active_game_by_event.find(event_slug);
-    const std::uint32_t prev_game = prev_it == tracker.active_game_by_event.end() ? 0 : prev_it->second;
-
-    tracker.active_game_by_event[event_slug] = game_num;
-
-    if (config.focus_current_game && prev_game != 0 && game_num != prev_game) {
-      for (const auto& snap : snapshots) {
-        if (snap.market.event_slug == event_slug &&
-            snap.market.market_kind == pm::MarketKind::GameWinner) {
-          const auto num = pm::parse_game_number(snap.market);
-          if (num && *num == game_num) {
-            print_now_watching(snap.market);
-            break;
-          }
-        }
-      }
-    }
-  }
-
-  previous = tracker;
-  return tracker;
+  post_leg(shot.yes);
+  post_leg(shot.no);
 }
 
 void scan_markets(
     const pm::Config& config,
     const std::vector<pm::BinaryMarket>& markets,
     pm::ClobClient& clob,
-    GameTracker& game_tracker) {
-  std::vector<MarketSnapshot> snapshots;
-  snapshots.reserve(markets.size());
+    pm::GameTracker& game_tracker,
+    pm::OrderChamberRegistry& chambers) {
+  std::unordered_map<std::string, pm::MarketBooks> books_by_condition;
 
   for (const auto& market : markets) {
     const auto yes_book = clob.fetch_book(market.yes_token_id);
@@ -288,46 +213,36 @@ void scan_markets(
     pm::MarketBooks books;
     books.yes.update(*yes_book);
     books.no.update(*no_book);
-
-    pm::GameResolutionResult resolution;
-    if (market.market_kind == pm::MarketKind::GameWinner) {
-      resolution = pm::detect_game_resolution(
-          market,
-          books.yes,
-          books.no,
-          config.game_loser_bid_max,
-          config.game_winner_ask_min);
-    }
-
-    snapshots.push_back({market, books, resolution});
+    books_by_condition[market.condition_id] = books;
   }
 
-  const auto tracker = build_game_tracker(config, snapshots, game_tracker);
+  const auto tracker =
+      pm::build_game_tracker(config, markets, books_by_condition, game_tracker);
 
-  for (const auto& snap : snapshots) {
-    if (!should_scan_for_arb(config, snap.market, tracker)) {
+  for (const auto& market : markets) {
+    const auto books_it = books_by_condition.find(market.condition_id);
+    if (books_it == books_by_condition.end()) {
       continue;
     }
 
+    if (!pm::should_scan_for_arb(config, market, tracker)) {
+      continue;
+    }
+
+    const auto& books = books_it->second;
     if (config.watch_status) {
-      print_market_status(snap.market, snap.books);
+      print_market_status(market, books);
     }
 
     if (auto buy = pm::detect_buy_both_arb(
-            snap.market,
-            snap.books.yes,
-            snap.books.no,
-            config.min_net_edge,
-            config.max_trade_usd)) {
+            market, books.yes, books.no, config.min_net_edge, config.max_trade_usd)) {
       print_opportunity(*buy);
+      try_fire_arb(config, clob, chambers, *buy);
     }
     if (auto sell = pm::detect_sell_both_arb(
-            snap.market,
-            snap.books.yes,
-            snap.books.no,
-            config.min_net_edge,
-            config.max_trade_usd)) {
+            market, books.yes, books.no, config.min_net_edge, config.max_trade_usd)) {
       print_opportunity(*sell);
+      try_fire_arb(config, clob, chambers, *sell);
     }
   }
 }
@@ -341,6 +256,7 @@ void print_startup_banner(
 
   std::cout << "Polymarket LoL arb watcher (scan-only, no trading)\n"
             << "  markets: " << markets.size() << '\n'
+            << "  book feed: " << (config.use_websocket ? "websocket" : "rest") << '\n'
             << "  min_net_edge: " << config.min_net_edge << '\n';
 
   if (config.lol_discover || !config.event_slug.empty()) {
@@ -354,8 +270,9 @@ void print_startup_banner(
       std::cout << "  live events only: yes\n";
     }
     if (config.focus_current_game) {
-      std::cout << "  focus current game: yes (loser bid <= " << config.game_loser_bid_max
-                << ", winner ask >= " << config.game_winner_ask_min << ")\n";
+      std::cout << "  sequential game scan: yes (Game 1 -> Game 2 -> ... -> moneyline decider)\n"
+                << "  game finished: loser ask <= " << config.game_loser_ask_max
+                << ", winner bid >= " << config.game_winner_bid_min << '\n';
     }
   }
 
@@ -385,6 +302,8 @@ int main(int argc, char** argv) {
       const std::string arg = argv[i];
       if (arg == "--benchmark") {
         config.benchmark_mode = true;
+      } else if (arg == "--benchmark-book") {
+        config.book_benchmark_mode = true;
       } else if (arg == "--lol") {
         config.lol_discover = true;
       } else if (arg == "--event" && i + 1 < argc) {
@@ -401,15 +320,9 @@ int main(int argc, char** argv) {
       }
     }
 
-    if (config.market_slug.empty() && config.event_slug.empty() && !config.benchmark_mode) {
+    if (config.market_slug.empty() && config.event_slug.empty() && !config.benchmark_mode &&
+        !config.book_benchmark_mode) {
       config.lol_discover = true;
-    }
-
-    if (!config.event_slug.empty()) {
-      config.use_websocket = false;
-    }
-    if (config.lol_discover) {
-      config.use_websocket = false;
     }
 
     config.live_trading = false;
@@ -431,13 +344,30 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  if (markets.empty() && !config.benchmark_mode) {
+  if (markets.empty() && !config.benchmark_mode && !config.book_benchmark_mode) {
     std::cerr << "No tradeable LoL moneyline or game-winner markets found.\n"
               << "Try PM_LOL_LIVE_ONLY=0 or set PM_EVENT_SLUG to a specific match.\n";
     return 1;
   }
 
   print_startup_banner(config, markets);
+
+  pm::OrderChamberRegistry chambers;
+  chambers.prime_all(markets, config);
+  if (config.verbose) {
+    std::cout << "  order chambers primed: " << markets.size() << " market(s)\n";
+  }
+
+  if (config.book_benchmark_mode) {
+    if (markets.empty()) {
+      std::cerr << "No market loaded for book benchmark\n";
+      return 1;
+    }
+    const auto result =
+        pm::run_book_update_benchmark(config, markets.front(), clob);
+    pm::print_book_update_benchmark_result(result, markets.front());
+    return 0;
+  }
 
   if (config.benchmark_mode) {
     if (markets.empty()) {
@@ -450,31 +380,41 @@ int main(int argc, char** argv) {
     return 0;
   }
 
-  if (config.use_websocket && markets.size() == 1) {
-    GameTracker game_tracker;
+  if (config.use_websocket) {
     pm::MarketWs ws(
         config,
         markets,
+        &clob,
+        &chambers,
         [](const pm::ArbOpportunity& opp) { print_opportunity(opp); });
     ws.start();
     while (g_running) {
-      scan_markets(config, markets, clob, game_tracker);
+      if (config.lol_discover || !config.event_slug.empty()) {
+        try {
+          markets = load_markets(config, gamma);
+          chambers.prime_all(markets, config);
+          ws.set_markets(markets);
+        } catch (const std::exception& ex) {
+          std::cerr << "Market refresh failed: " << ex.what() << '\n';
+        }
+      }
       std::this_thread::sleep_for(std::chrono::milliseconds(config.poll_interval_ms));
     }
     ws.stop();
     return 0;
   }
 
-  GameTracker game_tracker;
+  pm::GameTracker game_tracker;
   while (g_running) {
     if (config.lol_discover || !config.event_slug.empty()) {
       try {
         markets = load_markets(config, gamma);
+        chambers.prime_all(markets, config);
       } catch (const std::exception& ex) {
         std::cerr << "Market refresh failed: " << ex.what() << '\n';
       }
     }
-    scan_markets(config, markets, clob, game_tracker);
+    scan_markets(config, markets, clob, game_tracker, chambers);
     std::this_thread::sleep_for(std::chrono::milliseconds(config.poll_interval_ms));
   }
 

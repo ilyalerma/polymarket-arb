@@ -50,7 +50,14 @@ std::optional<TokenBook> ClobClient::fetch_book(const std::string& token_id) con
 std::optional<std::string> ClobClient::post_order(
     const std::string& body,
     const std::map<std::string, std::string>& auth_headers) const {
-  return http_.post("/order", body, auth_headers);
+  return post_order(body.data(), body.size(), auth_headers);
+}
+
+std::optional<std::string> ClobClient::post_order(
+    const char* body,
+    std::size_t body_len,
+    const std::map<std::string, std::string>& auth_headers) const {
+  return http_.post("/order", body, body_len, auth_headers);
 }
 
 }  // namespace pm

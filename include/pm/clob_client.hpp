@@ -3,6 +3,7 @@
 #include "pm/http_client.hpp"
 #include "pm/types.hpp"
 
+#include <cstddef>
 #include <map>
 #include <optional>
 #include <string>
@@ -16,6 +17,11 @@ class ClobClient {
   std::optional<TokenBook> fetch_book(const std::string& token_id) const;
   std::optional<std::string> post_order(
       const std::string& body,
+      const std::map<std::string, std::string>& auth_headers) const;
+
+  std::optional<std::string> post_order(
+      const char* body,
+      std::size_t body_len,
       const std::map<std::string, std::string>& auth_headers) const;
 
  private:

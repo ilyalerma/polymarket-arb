@@ -7,9 +7,12 @@
 
 namespace pm {
 
+enum class BookSide { Bid, Ask };
+
 class OrderBook {
  public:
   void update(const TokenBook& book);
+  void apply_level(BookSide side, double price, double size);
 
   std::optional<double> best_bid() const;
   std::optional<double> best_ask() const;

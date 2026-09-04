@@ -1,45 +1,61 @@
 #include "pm/ws/market_ws.hpp"
 
-#include "pm/clob_client.hpp"
+#include "pm/auth/l2_auth.hpp"
 #include "pm/fee_model.hpp"
-#include "pm/http_client.hpp"
+#include "pm/order_chamber.hpp"
+#include "pm/ws/book_updates.hpp"
 
 #include <ixwebsocket/IXWebSocket.h>
 #include <nlohmann/json.hpp>
 
 #include <iostream>
+#include <unordered_set>
 
 namespace pm {
 
 namespace {
 
-using json = nlohmann::json;
+void try_fire_arb(
+    const Config& config,
+    ClobClient* clob,
+    OrderChamberRegistry* chambers,
+    const ArbOpportunity& opp) {
+  if (!clob || !chambers) {
+    return;
+  }
 
-void update_book_from_payload(OrderBook& book, const json& payload) {
-  TokenBook token_book;
-  token_book.token_id = payload.value("asset_id", payload.value("tokenId", ""));
-  if (payload.contains("bids")) {
-    for (const auto& level : payload.at("bids")) {
-      token_book.bids.push_back(
-          {std::stod(level.at("price").get<std::string>()),
-           std::stod(level.at("size").get<std::string>())});
-    }
+  auto* chamber = chambers->chamber_for(opp.market.slug, opp.kind);
+  if (!chamber) {
+    return;
   }
-  if (payload.contains("asks")) {
-    for (const auto& level : payload.at("asks")) {
-      token_book.asks.push_back(
-          {std::stod(level.at("price").get<std::string>()),
-           std::stod(level.at("size").get<std::string>())});
-    }
+
+  chamber->aim(opp);
+  if (!config.live_trading) {
+    return;
   }
-  if (payload.contains("tick_size")) {
-    token_book.tick_size = std::stod(payload.at("tick_size").get<std::string>());
+
+  const auto salt = next_order_salt();
+  const auto timestamp_ms = current_timestamp_ms();
+  FiredShot shot;
+  if (!chamber->fire_into(shot, opp.max_size, salt, timestamp_ms)) {
+    return;
   }
-  if (payload.contains("min_order_size")) {
-    token_book.min_order_size =
-        std::stod(payload.at("min_order_size").get<std::string>());
-  }
-  book.update(token_book);
+
+  const auto post_leg = [&](const LegBodyBuffer& body) {
+    const auto headers = auth::build_l2_headers(
+        config.wallet_address,
+        config.api_key,
+        config.api_secret,
+        config.api_passphrase,
+        "POST",
+        "/order",
+        body.data,
+        body.size);
+    (void)clob->post_order(body.data, body.size, headers);
+  };
+
+  post_leg(shot.yes);
+  post_leg(shot.no);
 }
 
 }  // namespace
@@ -47,18 +63,43 @@ void update_book_from_payload(OrderBook& book, const json& payload) {
 MarketWs::MarketWs(
     Config config,
     std::vector<BinaryMarket> markets,
+    ClobClient* clob,
+    OrderChamberRegistry* chambers,
     ArbCallback on_arb)
     : config_(std::move(config)),
       markets_(std::move(markets)),
+      clob_(clob),
+      chambers_(chambers),
       on_arb_(std::move(on_arb)) {
-  for (const auto& market : markets_) {
-    token_to_market_[market.yes_token_id] = market;
-    token_to_market_[market.no_token_id] = market;
-    books_[market.condition_id] = MarketBooks{};
-  }
+  rebuild_indexes();
 }
 
 MarketWs::~MarketWs() { stop(); }
+
+void MarketWs::rebuild_indexes() {
+  token_to_market_.clear();
+  condition_to_market_.clear();
+  markets_by_event_.clear();
+  books_.clear();
+  tokens_with_book_.clear();
+
+  for (const auto& market : markets_) {
+    token_to_market_[market.yes_token_id] = market;
+    token_to_market_[market.no_token_id] = market;
+    condition_to_market_[market.condition_id] = market;
+    books_[market.condition_id] = MarketBooks{};
+    const std::string event_key =
+        market.event_slug.empty() ? market.condition_id : market.event_slug;
+    markets_by_event_[event_key].push_back(market);
+  }
+}
+
+void MarketWs::set_markets(const std::vector<BinaryMarket>& markets) {
+  std::lock_guard<std::mutex> lock(markets_mutex_);
+  markets_ = markets;
+  rebuild_indexes();
+  markets_dirty_ = true;
+}
 
 void MarketWs::start() {
   if (running_.exchange(true)) {
@@ -76,24 +117,44 @@ void MarketWs::stop() {
   }
 }
 
-void MarketWs::refresh_books_for_market(const BinaryMarket& market) {
-  ClobClient clob(HttpClient(config_.clob_url));
-  const auto yes = clob.fetch_book(market.yes_token_id);
-  const auto no = clob.fetch_book(market.no_token_id);
-  if (!yes || !no) {
+bool MarketWs::market_books_ready(const BinaryMarket& market) const {
+  return tokens_with_book_.count(market.yes_token_id) > 0 &&
+         tokens_with_book_.count(market.no_token_id) > 0;
+}
+
+void MarketWs::check_arb_for_market(const BinaryMarket& market) {
+  if (!market_books_ready(market)) {
     return;
   }
-  auto& books = books_[market.condition_id];
-  books.yes.update(*yes);
-  books.no.update(*no);
 
+  const auto tracker = build_game_tracker(config_, markets_, books_, game_tracker_);
+  if (!should_scan_for_arb(config_, market, tracker)) {
+    return;
+  }
+
+  const auto& books = books_.at(market.condition_id);
   if (auto buy = detect_buy_both_arb(
           market, books.yes, books.no, config_.min_net_edge, config_.max_trade_usd)) {
     on_arb_(*buy);
+    try_fire_arb(config_, clob_, chambers_, *buy);
   }
   if (auto sell = detect_sell_both_arb(
           market, books.yes, books.no, config_.min_net_edge, config_.max_trade_usd)) {
     on_arb_(*sell);
+    try_fire_arb(config_, clob_, chambers_, *sell);
+  }
+}
+
+void MarketWs::process_updates_for_event(const std::string& event_slug) {
+  const auto event_it = markets_by_event_.find(event_slug);
+  if (event_it == markets_by_event_.end()) {
+    return;
+  }
+
+  build_game_tracker(config_, markets_, books_, game_tracker_);
+
+  for (const auto& market : event_it->second) {
+    check_arb_for_market(market);
   }
 }
 
@@ -102,12 +163,14 @@ void MarketWs::handle_message(const std::string& message) {
     return;
   }
 
-  json event;
+  nlohmann::json event;
   try {
-    event = json::parse(message);
+    event = nlohmann::json::parse(message);
   } catch (...) {
     return;
   }
+
+  std::lock_guard<std::mutex> lock(markets_mutex_);
 
   const std::string type = event.value("event_type", event.value("type", ""));
   if (type == "book") {
@@ -116,51 +179,69 @@ void MarketWs::handle_message(const std::string& message) {
     if (it == token_to_market_.end()) {
       return;
     }
+
     auto& books = books_[it->second.condition_id];
     if (token_id == it->second.yes_token_id) {
-      update_book_from_payload(books.yes, event);
+      ws::update_book_from_payload(books.yes, event);
     } else {
-      update_book_from_payload(books.no, event);
+      ws::update_book_from_payload(books.no, event);
     }
-    if (auto buy = detect_buy_both_arb(
-            it->second, books.yes, books.no, config_.min_net_edge, config_.max_trade_usd)) {
-      on_arb_(*buy);
-    }
-    if (auto sell = detect_sell_both_arb(
-            it->second, books.yes, books.no, config_.min_net_edge, config_.max_trade_usd)) {
-      on_arb_(*sell);
-    }
+    tokens_with_book_.insert(token_id);
+
+    const std::string event_key = it->second.event_slug.empty() ? it->second.condition_id
+                                                                : it->second.event_slug;
+    process_updates_for_event(event_key);
     return;
   }
 
   if (type == "price_change" && event.contains("price_changes")) {
+    std::unordered_set<std::string> touched_events;
     for (const auto& change : event.at("price_changes")) {
       const auto token_id = change.value("asset_id", "");
       const auto it = token_to_market_.find(token_id);
       if (it == token_to_market_.end()) {
         continue;
       }
-      refresh_books_for_market(it->second);
+
+      auto& books = books_[it->second.condition_id];
+      OrderBook* book = nullptr;
+      if (token_id == it->second.yes_token_id) {
+        book = &books.yes;
+      } else if (token_id == it->second.no_token_id) {
+        book = &books.no;
+      }
+      if (!book || !ws::apply_price_change(*book, change)) {
+        continue;
+      }
+
+      tokens_with_book_.insert(token_id);
+      const std::string event_key = it->second.event_slug.empty() ? it->second.condition_id
+                                                                  : it->second.event_slug;
+      touched_events.insert(event_key);
+    }
+
+    for (const auto& event_key : touched_events) {
+      process_updates_for_event(event_key);
     }
   }
 }
 
-void MarketWs::run() {
-  for (const auto& market : markets_) {
-    refresh_books_for_market(market);
-  }
-
-  ix::WebSocket ws;
-  ws.setUrl(config_.ws_url);
-
-  json subscribe = {
+std::string MarketWs::build_subscribe_message() const {
+  std::lock_guard<std::mutex> lock(markets_mutex_);
+  nlohmann::json subscribe = {
       {"type", "market"},
-      {"assets_ids", json::array()},
+      {"assets_ids", nlohmann::json::array()},
   };
   for (const auto& market : markets_) {
     subscribe["assets_ids"].push_back(market.yes_token_id);
     subscribe["assets_ids"].push_back(market.no_token_id);
   }
+  return subscribe.dump();
+}
+
+void MarketWs::run() {
+  ix::WebSocket ws;
+  ws.setUrl(config_.ws_url);
 
   ws.setOnMessageCallback([this](const ix::WebSocketMessagePtr& msg) {
     if (msg->type == ix::WebSocketMessageType::Message) {
@@ -169,11 +250,21 @@ void MarketWs::run() {
   });
 
   ws.start();
-  ws.send(subscribe.dump());
+  ws.send(build_subscribe_message());
 
+  auto last_ping = std::chrono::steady_clock::now();
   while (running_) {
-    ws.send("PING");
-    std::this_thread::sleep_for(std::chrono::seconds(10));
+    if (markets_dirty_.exchange(false)) {
+      ws.send(build_subscribe_message());
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    if (now - last_ping >= std::chrono::seconds(10)) {
+      ws.send("PING");
+      last_ping = now;
+    }
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
   }
 
   ws.stop();

@@ -76,8 +76,8 @@ Config load_config_from_env() {
   config.scan_game_winners = !env_truthy(std::getenv("PM_SKIP_GAME_WINNERS"));
   config.event_limit = env_uint("PM_EVENT_LIMIT", config.event_limit);
   config.focus_current_game = !env_truthy(std::getenv("PM_SCAN_ALL_GAMES"));
-  config.game_loser_bid_max = env_double("PM_GAME_LOSER_BID_MAX", config.game_loser_bid_max);
-  config.game_winner_ask_min = env_double("PM_GAME_WINNER_ASK_MIN", config.game_winner_ask_min);
+  config.game_loser_ask_max = env_double("PM_GAME_LOSER_ASK_MAX", config.game_loser_ask_max);
+  config.game_winner_bid_min = env_double("PM_GAME_WINNER_BID_MIN", config.game_winner_bid_min);
 
   if (config.live_trading) {
     if (config.private_key.empty() || config.api_key.empty() ||

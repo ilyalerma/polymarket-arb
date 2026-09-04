@@ -27,6 +27,7 @@ struct Config {
   bool watch_status{false};
   bool verbose{false};
   bool benchmark_mode{false};
+  bool book_benchmark_mode{false};
   std::uint32_t benchmark_iterations{10};
 
   std::string series_slug{"league-of-legends"};
@@ -38,8 +39,8 @@ struct Config {
   std::uint32_t event_limit{30};
 
   bool focus_current_game{true};
-  double game_loser_bid_max{0.12};
-  double game_winner_ask_min{0.95};
+  double game_loser_ask_max{0.01};
+  double game_winner_bid_min{0.99};
 };
 
 Config load_config_from_env();

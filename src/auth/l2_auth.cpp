@@ -5,8 +5,7 @@
 #include <openssl/hmac.h>
 
 #include <chrono>
-#include <iomanip>
-#include <sstream>
+#include <cstring>
 
 namespace pm::auth {
 
@@ -45,19 +44,25 @@ std::string current_timestamp_seconds() {
   return std::to_string(seconds);
 }
 
-}  // namespace
-
-std::map<std::string, std::string> build_l2_headers(
+std::map<std::string, std::string> build_l2_headers_impl(
     const std::string& address,
     const std::string& api_key,
     const std::string& api_secret,
     const std::string& api_passphrase,
     const std::string& method,
     const std::string& path,
-    const std::string& body) {
+    const char* body,
+    std::size_t body_len) {
   const std::string timestamp = current_timestamp_seconds();
-  std::ostringstream message;
-  message << timestamp << method << path << body;
+
+  std::string message;
+  message.reserve(timestamp.size() + method.size() + path.size() + body_len);
+  message.append(timestamp);
+  message.append(method);
+  message.append(path);
+  if (body_len > 0) {
+    message.append(body, body_len);
+  }
 
   unsigned char digest[EVP_MAX_MD_SIZE];
   unsigned int digest_len = 0;
@@ -65,8 +70,8 @@ std::map<std::string, std::string> build_l2_headers(
       EVP_sha256(),
       api_secret.data(),
       static_cast<int>(api_secret.size()),
-      reinterpret_cast<const unsigned char*>(message.str().data()),
-      message.str().size(),
+      reinterpret_cast<const unsigned char*>(message.data()),
+      message.size(),
       digest,
       &digest_len);
 
@@ -79,6 +84,47 @@ std::map<std::string, std::string> build_l2_headers(
       {"POLY_API_KEY", api_key},
       {"POLY_PASSPHRASE", api_passphrase},
   };
+}
+
+}  // namespace
+
+std::map<std::string, std::string> build_l2_headers(
+    const std::string& address,
+    const std::string& api_key,
+    const std::string& api_secret,
+    const std::string& api_passphrase,
+    const std::string& method,
+    const std::string& path,
+    const std::string& body) {
+  return build_l2_headers_impl(
+      address,
+      api_key,
+      api_secret,
+      api_passphrase,
+      method,
+      path,
+      body.data(),
+      body.size());
+}
+
+std::map<std::string, std::string> build_l2_headers(
+    const std::string& address,
+    const std::string& api_key,
+    const std::string& api_secret,
+    const std::string& api_passphrase,
+    const std::string& method,
+    const std::string& path,
+    const char* body,
+    std::size_t body_len) {
+  return build_l2_headers_impl(
+      address,
+      api_key,
+      api_secret,
+      api_passphrase,
+      method,
+      path,
+      body,
+      body_len);
 }
 
 }  // namespace pm::auth

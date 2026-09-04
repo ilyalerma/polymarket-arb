@@ -1,4 +1,5 @@
 #include "pm/gamma_client.hpp"
+#include "pm/game_state.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -161,15 +162,34 @@ LolEvent parse_event(const json& event_json) {
   event.slug = event_json.value("slug", "");
   event.title = event_json.value("title", "");
   event.live = event_json.value("live", false);
+  event.series_best_of =
+      parse_series_best_of(event.title, event_json.value("score", "")).value_or(0);
+
   if (!event_json.contains("markets")) {
     return event;
   }
+
+  std::uint32_t max_game_number = 0;
+  for (const auto& market : event_json.at("markets")) {
+    if (!is_game_winner_market(market)) {
+      continue;
+    }
+    pm::BinaryMarket probe;
+    probe.group_title = market.value("groupItemTitle", "");
+    const auto game_number = parse_game_number(probe);
+    if (game_number) {
+      max_game_number = std::max(max_game_number, *game_number);
+    }
+  }
+  event.max_listed_game = max_game_number;
 
   for (const auto& market : event_json.at("markets")) {
     auto parsed = parse_market(market, false, event.slug, event.title);
     if (!parsed) {
       continue;
     }
+    parsed->series_best_of = event.series_best_of;
+    parsed->max_listed_game = event.max_listed_game;
     event.markets.push_back(*parsed);
   }
   return event;

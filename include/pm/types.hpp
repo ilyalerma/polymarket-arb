@@ -42,12 +42,16 @@ struct BinaryMarket {
   double taker_fee_rate{0.05};
   double liquidity{0.0};
   double volume_24h{0.0};
+  std::uint32_t series_best_of{0};
+  std::uint32_t max_listed_game{0};
 };
 
 struct LolEvent {
   std::string slug;
   std::string title;
   bool live{false};
+  std::uint32_t series_best_of{0};
+  std::uint32_t max_listed_game{0};
   std::vector<BinaryMarket> markets;
 };
 

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <map>
 #include <optional>
 #include <string>
@@ -23,6 +24,12 @@ class HttpClient {
   std::optional<std::string> post(
       const std::string& path,
       const std::string& body,
+      const std::map<std::string, std::string>& headers = {}) const;
+
+  std::optional<std::string> post(
+      const std::string& path,
+      const char* body,
+      std::size_t body_len,
       const std::map<std::string, std::string>& headers = {}) const;
 
  private:

@@ -3,6 +3,8 @@
 #include "pm/types.hpp"
 
 #include <iostream>
+#include <unordered_map>
+#include <unordered_set>
 
 namespace {
 
@@ -38,27 +40,75 @@ int main() {
   }
 
   auto open = make_books(0.44, 0.45, 0.55, 0.56);
-  const auto open_result = pm::detect_game_resolution(market, open.yes, open.no, 0.12, 0.95);
+  const auto open_result = pm::detect_game_resolution(market, open.yes, open.no, 0.01, 0.99);
   if (open_result.state != pm::GameResolution::Open) {
     std::cerr << "expected open market\n";
     return 1;
   }
 
-  // KT won: yes ask gone/expired, DK bid collapsed to 0.10
-  auto kt_won = make_books(0.99, 0.99, 0.10, 0.99);
-  const auto kt_result = pm::detect_game_resolution(market, kt_won.yes, kt_won.no, 0.12, 0.95);
+  // KT won: yes bid at 0.99, DK offer collapsed to 0.01
+  auto kt_won = make_books(0.99, 0.99, 0.99, 0.01);
+  const auto kt_result = pm::detect_game_resolution(market, kt_won.yes, kt_won.no, 0.01, 0.99);
   if (kt_result.state != pm::GameResolution::OutcomeOneWon ||
       kt_result.winner_outcome != "KT Rolster") {
     std::cerr << "expected KT win detection\n";
     return 1;
   }
 
-  // DK won: no ask expensive, KT bid at 0.08
-  auto dk_won = make_books(0.08, 0.99, 0.99, 0.99);
-  const auto dk_result = pm::detect_game_resolution(market, dk_won.yes, dk_won.no, 0.12, 0.95);
+  // DK won: no bid at 0.99, KT offer at 0.01
+  auto dk_won = make_books(0.99, 0.01, 0.99, 0.99);
+  const auto dk_result = pm::detect_game_resolution(market, dk_won.yes, dk_won.no, 0.01, 0.99);
   if (dk_result.state != pm::GameResolution::OutcomeTwoWon ||
       dk_result.winner_outcome != "Dplus KIA") {
     std::cerr << "expected DK win detection\n";
+    return 1;
+  }
+
+  const auto bo3 = pm::parse_series_best_of("LoL: KT vs DK (BO3)", "Bo3");
+  const auto bo5 = pm::parse_series_best_of("LoL: IG vs TES (BO5)", "");
+  if (!bo3 || *bo3 != 3 || !bo5 || *bo5 != 5) {
+    std::cerr << "parse_series_best_of failed\n";
+    return 1;
+  }
+
+  std::unordered_map<std::uint32_t, pm::GameResolution> resolutions;
+  std::unordered_set<std::uint32_t> available{1, 2};
+
+  auto watch = pm::compute_sequential_watch_target(2, resolutions, available);
+  if (watch.watch_moneyline || watch.game_number != 1) {
+    std::cerr << "expected watch game 1 first\n";
+    return 1;
+  }
+
+  resolutions[1] = pm::GameResolution::OutcomeOneWon;
+  watch = pm::compute_sequential_watch_target(2, resolutions, available);
+  if (watch.watch_moneyline || watch.game_number != 2) {
+    std::cerr << "expected watch game 2 after game 1 resolved\n";
+    return 1;
+  }
+
+  resolutions[2] = pm::GameResolution::OutcomeTwoWon;
+  watch = pm::compute_sequential_watch_target(2, resolutions, available);
+  if (!watch.watch_moneyline) {
+    std::cerr << "expected moneyline after BO3 games 1-2 resolved\n";
+    return 1;
+  }
+
+  resolutions.clear();
+  available = {1, 2, 3, 4};
+  watch = pm::compute_sequential_watch_target(4, resolutions, available);
+  if (watch.watch_moneyline || watch.game_number != 1) {
+    std::cerr << "expected watch game 1 in BO5\n";
+    return 1;
+  }
+
+  resolutions[1] = pm::GameResolution::OutcomeOneWon;
+  resolutions[2] = pm::GameResolution::OutcomeTwoWon;
+  resolutions[3] = pm::GameResolution::OutcomeOneWon;
+  resolutions[4] = pm::GameResolution::OutcomeTwoWon;
+  watch = pm::compute_sequential_watch_target(4, resolutions, available);
+  if (!watch.watch_moneyline) {
+    std::cerr << "expected moneyline for BO5 game 5 decider\n";
     return 1;
   }
 
