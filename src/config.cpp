@@ -64,6 +64,18 @@ Config load_config_from_env() {
   config.benchmark_mode = env_truthy(std::getenv("PM_BENCHMARK"));
   config.benchmark_iterations = env_uint("PM_BENCHMARK_ITERATIONS", config.benchmark_iterations);
 
+  config.series_slug = env_string("PM_SERIES_SLUG").empty() ? config.series_slug
+                                                             : env_string("PM_SERIES_SLUG");
+  config.event_slug = env_string("PM_EVENT_SLUG");
+  if (config.event_slug.empty()) {
+    config.event_slug = env_string("PM_LOL_EVENT");
+  }
+  config.lol_discover = env_truthy(std::getenv("PM_LOL_DISCOVER"));
+  config.lol_live_only = env_truthy(std::getenv("PM_LOL_LIVE_ONLY"));
+  config.scan_moneyline = !env_truthy(std::getenv("PM_SKIP_MONEYLINE"));
+  config.scan_game_winners = !env_truthy(std::getenv("PM_SKIP_GAME_WINNERS"));
+  config.event_limit = env_uint("PM_EVENT_LIMIT", config.event_limit);
+
   if (config.live_trading) {
     if (config.private_key.empty() || config.api_key.empty() ||
         config.api_secret.empty() || config.api_passphrase.empty() ||

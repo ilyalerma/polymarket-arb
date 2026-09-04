@@ -12,9 +12,11 @@
 #include <ctime>
 #include <iomanip>
 #include <iostream>
+#include <regex>
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <unordered_map>
 
 namespace {
 
@@ -24,6 +26,16 @@ void on_signal(int) { g_running = false; }
 
 std::string arb_kind_name(pm::ArbKind kind) {
   return kind == pm::ArbKind::BuyBoth ? "BUY_BOTH" : "SELL_BOTH";
+}
+
+std::string market_kind_label(const pm::BinaryMarket& market) {
+  if (market.market_kind == pm::MarketKind::Moneyline) {
+    return "MONEYLINE";
+  }
+  if (market.market_kind == pm::MarketKind::GameWinner) {
+    return market.group_title.empty() ? "GAME_WINNER" : market.group_title;
+  }
+  return "BINARY";
 }
 
 std::string now_string() {
@@ -36,8 +48,12 @@ std::string now_string() {
 
 void print_opportunity(const pm::ArbOpportunity& opp) {
   std::cout << std::fixed << std::setprecision(4)
-            << "\n*** ARB @" << now_string() << " [" << arb_kind_name(opp.kind) << "] ***\n"
-            << opp.market.question << '\n'
+            << "\n*** ARB @" << now_string() << " [" << arb_kind_name(opp.kind) << "] "
+            << market_kind_label(opp.market) << " ***\n";
+  if (!opp.market.event_title.empty()) {
+    std::cout << opp.market.event_title << '\n';
+  }
+  std::cout << opp.market.question << " [" << opp.market.slug << "]\n"
             << "  " << opp.market.yes_outcome << " @ " << opp.yes_price
             << "  |  " << opp.market.no_outcome << " @ " << opp.no_price << '\n'
             << "  gross_edge=" << opp.gross_edge << " net_edge=" << opp.net_edge
@@ -53,7 +69,7 @@ void print_market_status(
   const auto no_bid = books.no.best_bid();
   const auto no_ask = books.no.best_ask();
   if (!yes_bid || !yes_ask || !no_bid || !no_ask) {
-    std::cout << "[" << now_string() << "] waiting for book data...\n";
+    std::cout << "[" << now_string() << "] waiting for book data: " << market.slug << '\n';
     return;
   }
 
@@ -63,13 +79,48 @@ void print_market_status(
   const double sell_edge = sell_both_proceeds - 1.0;
 
   std::cout << std::fixed << std::setprecision(3)
-            << "[" << now_string() << "] " << market.question << '\n'
+            << "[" << now_string() << "] [" << market_kind_label(market) << "] "
+            << market.question << '\n'
             << "  " << market.yes_outcome << "  bid=" << *yes_bid << " ask=" << *yes_ask
             << "  |  " << market.no_outcome << "  bid=" << *no_bid << " ask=" << *no_ask
             << '\n'
             << "  buy-both cost=" << buy_both_cost << " (edge " << buy_edge << ")"
             << "  |  sell-both proceeds=" << sell_both_proceeds << " (edge " << sell_edge
             << ")\n";
+}
+
+bool looks_like_game_market_slug(const std::string& slug) {
+  static const std::regex pattern(R"(-game\d+$)");
+  return std::regex_search(slug, pattern);
+}
+
+std::string infer_event_slug_from_market(const std::string& market_slug) {
+  static const std::regex game_suffix(R"(-game\d+$)");
+  return std::regex_replace(market_slug, game_suffix, "");
+}
+
+std::vector<pm::BinaryMarket> load_lol_markets(
+    const pm::Config& config,
+    pm::GammaClient& gamma) {
+  std::vector<pm::BinaryMarket> markets;
+
+  if (!config.event_slug.empty()) {
+    const auto event = gamma.fetch_lol_event(config.event_slug);
+    if (!event) {
+      throw std::runtime_error("LoL event not found: " + config.event_slug);
+    }
+    return gamma.extract_arb_markets(
+        *event, config.scan_moneyline, config.scan_game_winners);
+  }
+
+  const auto events =
+      gamma.fetch_lol_events(config.series_slug, config.event_limit, config.lol_live_only);
+  for (const auto& event : events) {
+    const auto event_markets = gamma.extract_arb_markets(
+        event, config.scan_moneyline, config.scan_game_winners);
+    markets.insert(markets.end(), event_markets.begin(), event_markets.end());
+  }
+  return markets;
 }
 
 std::vector<pm::BinaryMarket> load_markets(
@@ -79,16 +130,19 @@ std::vector<pm::BinaryMarket> load_markets(
     auto market = gamma.fetch_market_by_slug(
         config.market_slug, config.benchmark_mode);
     if (!market && config.benchmark_mode) {
-      constexpr const char* kEventPrefix = "lol-kt-dk-2026-09-04";
-      if (config.market_slug.rfind(kEventPrefix, 0) == 0) {
-        market = gamma.fetch_market_from_event(kEventPrefix, config.market_slug);
-      }
+      const auto event_slug = infer_event_slug_from_market(config.market_slug);
+      market = gamma.fetch_market_from_event(event_slug, config.market_slug);
     }
     if (!market) {
       throw std::runtime_error("market not found for slug: " + config.market_slug);
     }
     return {*market};
   }
+
+  if (config.lol_discover || !config.event_slug.empty()) {
+    return load_lol_markets(config, gamma);
+  }
+
   return gamma.fetch_active_markets(config.market_limit);
 }
 
@@ -100,7 +154,9 @@ void scan_markets(
     const auto yes_book = clob.fetch_book(market.yes_token_id);
     const auto no_book = clob.fetch_book(market.no_token_id);
     if (!yes_book || !no_book) {
-      std::cerr << "Failed to fetch books for " << market.slug << '\n';
+      if (config.verbose) {
+        std::cerr << "Failed to fetch books for " << market.slug << '\n';
+      }
       continue;
     }
 
@@ -130,16 +186,31 @@ void print_startup_banner(
     return;
   }
 
-  std::cout << "Polymarket arb watcher (scan-only, no trading)\n"
+  std::cout << "Polymarket LoL arb watcher (scan-only, no trading)\n"
             << "  markets: " << markets.size() << '\n'
-            << "  min_net_edge: " << config.min_net_edge << '\n'
-            << "  fee category: " << (markets.empty() ? "n/a" : markets.front().category)
-            << " (rate=" << (markets.empty() ? 0.0 : markets.front().taker_fee_rate) << ")\n";
+            << "  min_net_edge: " << config.min_net_edge << '\n';
 
-  if (!markets.empty()) {
-    std::cout << "  watching: " << markets.front().question << " [" << markets.front().slug
-              << "]\n";
+  if (config.lol_discover || !config.event_slug.empty()) {
+    std::cout << "  series: " << config.series_slug << '\n'
+              << "  moneyline: " << (config.scan_moneyline ? "yes" : "no")
+              << "  game winners: " << (config.scan_game_winners ? "yes" : "no") << '\n';
+    if (!config.event_slug.empty()) {
+      std::cout << "  event: " << config.event_slug << '\n';
+    }
+    if (config.lol_live_only) {
+      std::cout << "  live events only: yes\n";
+    }
   }
+
+  std::unordered_map<std::string, std::uint32_t> per_event;
+  for (const auto& market : markets) {
+    const std::string key = market.event_slug.empty() ? market.slug : market.event_slug;
+    ++per_event[key];
+  }
+  for (const auto& [event_slug, count] : per_event) {
+    std::cout << "  - " << event_slug << ": " << count << " market(s)\n";
+  }
+
   std::cout << "  press Ctrl+C to stop\n\n";
 }
 
@@ -157,10 +228,33 @@ int main(int argc, char** argv) {
       const std::string arg = argv[i];
       if (arg == "--benchmark") {
         config.benchmark_mode = true;
+      } else if (arg == "--lol") {
+        config.lol_discover = true;
+      } else if (arg == "--event" && i + 1 < argc) {
+        config.event_slug = argv[++i];
+        config.lol_discover = false;
       } else if (!arg.empty() && arg.front() != '-') {
-        config.market_slug = arg;
+        if (looks_like_game_market_slug(arg) || arg.find("-game") != std::string::npos) {
+          config.market_slug = arg;
+        } else if (arg.rfind("lol-", 0) == 0) {
+          config.event_slug = arg;
+        } else {
+          config.market_slug = arg;
+        }
       }
     }
+
+    if (config.market_slug.empty() && config.event_slug.empty() && !config.benchmark_mode) {
+      config.lol_discover = true;
+    }
+
+    if (!config.event_slug.empty()) {
+      config.use_websocket = false;
+    }
+    if (config.lol_discover) {
+      config.use_websocket = false;
+    }
+
     config.live_trading = false;
   } catch (const std::exception& ex) {
     std::cerr << "Config error: " << ex.what() << '\n';
@@ -177,6 +271,12 @@ int main(int argc, char** argv) {
     markets = load_markets(config, gamma);
   } catch (const std::exception& ex) {
     std::cerr << ex.what() << '\n';
+    return 1;
+  }
+
+  if (markets.empty() && !config.benchmark_mode) {
+    std::cerr << "No tradeable LoL moneyline or game-winner markets found.\n"
+              << "Try PM_LOL_LIVE_ONLY=0 or set PM_EVENT_SLUG to a specific match.\n";
     return 1;
   }
 
@@ -208,6 +308,13 @@ int main(int argc, char** argv) {
   }
 
   while (g_running) {
+    if (config.lol_discover || !config.event_slug.empty()) {
+      try {
+        markets = load_markets(config, gamma);
+      } catch (const std::exception& ex) {
+        std::cerr << "Market refresh failed: " << ex.what() << '\n';
+      }
+    }
     scan_markets(config, markets, clob);
     std::this_thread::sleep_for(std::chrono::milliseconds(config.poll_interval_ms));
   }

@@ -7,6 +7,8 @@
 
 namespace pm {
 
+enum class MarketKind { Moneyline, GameWinner, Other };
+
 struct BookLevel {
   double price{0.0};
   double size{0.0};
@@ -24,6 +26,10 @@ struct BinaryMarket {
   std::string condition_id;
   std::string question;
   std::string slug;
+  std::string event_slug;
+  std::string event_title;
+  std::string group_title;
+  MarketKind market_kind{MarketKind::Other};
   std::string yes_token_id;
   std::string no_token_id;
   std::string yes_outcome;
@@ -36,6 +42,13 @@ struct BinaryMarket {
   double taker_fee_rate{0.05};
   double liquidity{0.0};
   double volume_24h{0.0};
+};
+
+struct LolEvent {
+  std::string slug;
+  std::string title;
+  bool live{false};
+  std::vector<BinaryMarket> markets;
 };
 
 enum class ArbKind { BuyBoth, SellBoth };

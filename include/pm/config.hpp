@@ -28,6 +28,14 @@ struct Config {
   bool verbose{false};
   bool benchmark_mode{false};
   std::uint32_t benchmark_iterations{10};
+
+  std::string series_slug{"league-of-legends"};
+  std::string event_slug;
+  bool lol_discover{false};
+  bool lol_live_only{false};
+  bool scan_moneyline{true};
+  bool scan_game_winners{true};
+  std::uint32_t event_limit{30};
 };
 
 Config load_config_from_env();

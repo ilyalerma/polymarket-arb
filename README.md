@@ -33,7 +33,19 @@ brew install cmake openssl
 
 ## Run
 
-Watch a specific market (silent until an arb appears):
+Discover all active LoL matches (moneyline + game winners, silent until arb):
+
+```bash
+PM_DISABLE_WS=1 ./build/polymarket-arb --lol
+```
+
+Watch one match (moneyline + Game 1–5):
+
+```bash
+PM_DISABLE_WS=1 ./build/polymarket-arb --event lol-kt-dk-2026-09-04
+```
+
+Watch a single game market:
 
 ```bash
 PM_DISABLE_WS=1 ./build/polymarket-arb lol-kt-dk-2026-09-04-game4
@@ -53,10 +65,15 @@ Copy `.env.example` to `.env` and adjust settings as needed.
 |---|---|---|
 | `PM_MIN_NET_EDGE` | `0.002` | Minimum net edge per share after fees |
 | `PM_MAX_TRADE_USD` | `100` | Max notional per opportunity |
-| `PM_MARKET_LIMIT` | `200` | Number of markets to load from Gamma |
-| `PM_MIN_LIQUIDITY` | `5000` | Minimum market liquidity filter |
 | `PM_POLL_INTERVAL_MS` | `2000` | REST polling interval |
 | `PM_DISABLE_WS` | unset | Set to `1` to disable WebSocket mode |
+| `PM_LOL_DISCOVER` | auto | Scan all active LoL events |
+| `PM_SERIES_SLUG` | `league-of-legends` | Gamma series to discover |
+| `PM_EVENT_SLUG` | unset | Watch one match (moneyline + games) |
+| `PM_EVENT_LIMIT` | `30` | Max events in discover mode |
+| `PM_LOL_LIVE_ONLY` | unset | Only scan live events |
+| `PM_SKIP_MONEYLINE` | unset | Skip match winner markets |
+| `PM_SKIP_GAME_WINNERS` | unset | Skip game winner markets |
 | `PM_WATCH_STATUS` | unset | Set to `1` to print periodic price updates |
 | `PM_VERBOSE` | unset | Set to `1` to print startup banner |
 | `PM_BENCHMARK` | unset | Set to `1` or pass `--benchmark` for latency test |
@@ -81,9 +98,8 @@ After=network-online.target
 Type=simple
 User=ubuntu
 WorkingDirectory=/home/ubuntu/polymarket-arb
-Environment=PM_DISABLE_WS=1
-Environment=PM_MARKET_SLUG=your-market-slug
-ExecStart=/home/ubuntu/polymarket-arb/build/polymarket-arb
+EnvironmentFile=/home/ubuntu/polymarket-arb/.env
+ExecStart=/home/ubuntu/polymarket-arb/build/polymarket-arb --lol
 Restart=always
 RestartSec=5
 

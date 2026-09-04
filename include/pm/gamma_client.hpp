@@ -20,6 +20,16 @@ class GammaClient {
       const std::string& event_slug,
       const std::string& market_slug) const;
 
+  std::vector<LolEvent> fetch_lol_events(
+      const std::string& series_slug,
+      std::uint32_t limit,
+      bool live_only) const;
+  std::optional<LolEvent> fetch_lol_event(const std::string& event_slug) const;
+  std::vector<BinaryMarket> extract_arb_markets(
+      const LolEvent& event,
+      bool include_moneyline,
+      bool include_game_winners) const;
+
  private:
   HttpClient http_;
 };
