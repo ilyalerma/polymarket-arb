@@ -8,6 +8,7 @@
 #include "pm/gamma_client.hpp"
 #include "pm/market_tracker.hpp"
 #include "pm/order_chamber.hpp"
+#include "pm/trade_fire.hpp"
 #include "pm/ws/market_ws.hpp"
 
 #include <atomic>
@@ -153,45 +154,6 @@ std::vector<pm::BinaryMarket> load_markets(
   return gamma.fetch_active_markets(config.market_limit);
 }
 
-void try_fire_arb(
-    const pm::Config& config,
-    pm::ClobClient& clob,
-    pm::OrderChamberRegistry& chambers,
-    const pm::ArbOpportunity& opp) {
-  auto* chamber = chambers.chamber_for(opp.market.slug, opp.kind);
-  if (!chamber) {
-    return;
-  }
-
-  chamber->aim(opp);
-  if (!config.live_trading) {
-    return;
-  }
-
-  const auto salt = pm::next_order_salt();
-  const auto timestamp_ms = pm::current_timestamp_ms();
-  pm::FiredShot shot;
-  if (!chamber->fire_into(shot, opp.max_size, salt, timestamp_ms)) {
-    return;
-  }
-
-  const auto post_leg = [&](const pm::LegBodyBuffer& body) {
-    const auto headers = pm::auth::build_l2_headers(
-        config.wallet_address,
-        config.api_key,
-        config.api_secret,
-        config.api_passphrase,
-        "POST",
-        "/order",
-        body.data,
-        body.size);
-    (void)clob.post_order(body.data, body.size, headers);
-  };
-
-  post_leg(shot.yes);
-  post_leg(shot.no);
-}
-
 void scan_markets(
     const pm::Config& config,
     const std::vector<pm::BinaryMarket>& markets,
@@ -324,8 +286,6 @@ int main(int argc, char** argv) {
         !config.book_benchmark_mode) {
       config.lol_discover = true;
     }
-
-    config.live_trading = false;
   } catch (const std::exception& ex) {
     std::cerr << "Config error: " << ex.what() << '\n';
     return 1;
@@ -351,6 +311,10 @@ int main(int argc, char** argv) {
   }
 
   print_startup_banner(config, markets);
+  if (!config.verbose) {
+    std::cout << "Watching " << markets.size() << " market(s) — silent until arb. "
+              << "Use PM_VERBOSE=1 or PM_WATCH_STATUS=1 for live output.\n";
+  }
 
   pm::OrderChamberRegistry chambers;
   chambers.prime_all(markets, config);
@@ -381,12 +345,20 @@ int main(int argc, char** argv) {
   }
 
   if (config.use_websocket) {
+    pm::MarketWs::StatusCallback on_status;
+    if (config.watch_status) {
+      on_status = [](const pm::BinaryMarket& market, const pm::MarketBooks& books) {
+        print_market_status(market, books);
+      };
+    }
+
     pm::MarketWs ws(
         config,
         markets,
         &clob,
         &chambers,
-        [](const pm::ArbOpportunity& opp) { print_opportunity(opp); });
+        [](const pm::ArbOpportunity& opp) { print_opportunity(opp); },
+        std::move(on_status));
     ws.start();
     while (g_running) {
       if (config.lol_discover || !config.event_slug.empty()) {

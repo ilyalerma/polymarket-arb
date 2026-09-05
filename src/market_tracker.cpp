@@ -178,8 +178,8 @@ GameTracker build_game_tracker(
 
     tracker.watch_by_event[event_slug] = target;
 
-    if (!config.focus_current_game || !had_previous ||
-        watch_targets_equal(previous_target, target)) {
+    if (!config.focus_current_game ||
+        (had_previous && watch_targets_equal(previous_target, target))) {
       continue;
     }
 

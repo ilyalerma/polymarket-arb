@@ -40,7 +40,25 @@ FetchContent_Declare(
   GIT_TAG v11.4.5
   GIT_SHALLOW TRUE
 )
-FetchContent_MakeAvailable(nlohmann_json ixwebsocket)
+FetchContent_Declare(
+  simdjson
+  GIT_REPOSITORY https://github.com/simdjson/simdjson.git
+  GIT_TAG v3.9.4
+  GIT_SHALLOW TRUE
+)
+set(USE_TLS ON CACHE BOOL "Enable TLS in IXWebSocket" FORCE)
+set(USE_OPEN_SSL ON CACHE BOOL "Use OpenSSL for IXWebSocket TLS" FORCE)
+FetchContent_Declare(
+  secp256k1
+  GIT_REPOSITORY https://github.com/bitcoin-core/secp256k1.git
+  GIT_TAG v0.5.1
+  GIT_SHALLOW TRUE
+)
+set(SECP256K1_ENABLE_MODULE_RECOVERY ON CACHE BOOL "" FORCE)
+set(SECP256K1_BUILD_BENCHMARK OFF CACHE BOOL "" FORCE)
+set(SECP256K1_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(SECP256K1_INSTALL OFF CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(nlohmann_json ixwebsocket simdjson secp256k1)
 
 find_package(CURL REQUIRED)
 find_package(OpenSSL REQUIRED)
@@ -54,8 +72,13 @@ add_library(pm_core
   src/fee_model.cpp
   src/arb_engine.cpp
   src/auth/l2_auth.cpp
+  src/auth/keccak256.cpp
+  src/auth/eip712_sign.cpp
   src/ws/market_ws.cpp
   src/ws/book_updates.cpp
+  src/ws/simdjson_book_parser.cpp
+  src/fast_decimal.cpp
+  src/trade_fire.cpp
   src/config.cpp
   src/benchmark.cpp
   src/game_state.cpp
@@ -74,9 +97,11 @@ target_link_libraries(pm_core
   PUBLIC
     nlohmann_json::nlohmann_json
     ixwebsocket::ixwebsocket
+    simdjson::simdjson
     CURL::libcurl
     OpenSSL::SSL
     OpenSSL::Crypto
+    secp256k1
     Threads::Threads
 )
 
@@ -99,3 +124,6 @@ add_test(NAME pm_test_order_book COMMAND pm_test_order_book)
 add_executable(pm_test_order_chamber tests/test_order_chamber.cpp)
 target_link_libraries(pm_test_order_chamber PRIVATE pm_core)
 add_test(NAME pm_test_order_chamber COMMAND pm_test_order_chamber)
+add_executable(pm_test_spsc_ring tests/test_spsc_ring.cpp)
+target_link_libraries(pm_test_spsc_ring PRIVATE pm_core)
+add_test(NAME pm_test_spsc_ring COMMAND pm_test_spsc_ring)

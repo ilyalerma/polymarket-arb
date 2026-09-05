@@ -12,6 +12,8 @@ struct Config {
 
   bool live_trading{false};
   std::string private_key;
+  std::string signer_address;
+  std::uint8_t signature_type{0};
   std::string api_key;
   std::string api_secret;
   std::string api_passphrase;

@@ -1,4 +1,5 @@
 #include "pm/ws/book_updates.hpp"
+#include "pm/ws/simdjson_book_parser.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -45,12 +46,10 @@ bool apply_price_change(OrderBook& book, const nlohmann::json& change) {
   const double price = parse_decimal_field(change, "price");
   const double size = parse_decimal_field(change, "size");
   if (side == "BUY") {
-    book.apply_level(BookSide::Bid, price, size);
-    return true;
+    return apply_price_change(book, BookSide::Bid, price, size);
   }
   if (side == "SELL") {
-    book.apply_level(BookSide::Ask, price, size);
-    return true;
+    return apply_price_change(book, BookSide::Ask, price, size);
   }
   return false;
 }

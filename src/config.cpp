@@ -1,5 +1,7 @@
 #include "pm/config.hpp"
 
+#include "pm/auth/eip712_sign.hpp"
+
 #include <cstdlib>
 #include <cstring>
 #include <stdexcept>
@@ -47,6 +49,9 @@ Config load_config_from_env() {
 
   config.live_trading = env_truthy(std::getenv("PM_LIVE_TRADING"));
   config.private_key = env_string("PM_PRIVATE_KEY");
+  config.signer_address = env_string("PM_SIGNER_ADDRESS");
+  config.signature_type = static_cast<std::uint8_t>(
+      env_uint("PM_SIGNATURE_TYPE", config.signature_type));
   config.api_key = env_string("PM_API_KEY");
   config.api_secret = env_string("PM_API_SECRET");
   config.api_passphrase = env_string("PM_API_PASSPHRASE");
@@ -86,6 +91,9 @@ Config load_config_from_env() {
       throw std::runtime_error(
           "PM_LIVE_TRADING requires PM_PRIVATE_KEY, PM_API_KEY, PM_API_SECRET, "
           "PM_API_PASSPHRASE, and PM_WALLET_ADDRESS");
+    }
+    if (config.signer_address.empty()) {
+      config.signer_address = auth::address_from_private_key(config.private_key);
     }
   }
 

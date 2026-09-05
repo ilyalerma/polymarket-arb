@@ -44,10 +44,22 @@ struct PreparedLeg {
       std::uint64_t salt,
       std::int64_t timestamp_ms) const noexcept;
 
+  bool sign_buffer(
+      LegBodyBuffer& buffer,
+      const Config& config,
+      bool neg_risk,
+      std::uint64_t salt,
+      std::int64_t timestamp_ms,
+      double quantity_shares) const;
+
  private:
   bool is_buy_{true};
   bool priced_{false};
   std::uint64_t price_units_{0};
+  std::uint8_t signature_type_{0};
+  std::string token_id_;
+  std::string maker_address_;
+  std::string signer_address_;
 
   std::string head_;
   std::string mid_salt_;
@@ -76,6 +88,14 @@ struct OrderChamber {
       double quantity_shares,
       std::uint64_t salt,
       std::int64_t timestamp_ms) const noexcept;
+
+  bool sign_shot(
+      FiredShot& out,
+      const Config& config,
+      const BinaryMarket& market,
+      std::uint64_t salt,
+      std::int64_t timestamp_ms,
+      double quantity_shares) const;
 };
 
 class OrderChamberRegistry {

@@ -1,10 +1,12 @@
 #include "pm/order_chamber.hpp"
 
+#include "pm/auth/eip712_sign.hpp"
 #include "pm/fast_format.hpp"
 
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstring>
 
 namespace pm {
 
@@ -61,11 +63,19 @@ void PreparedLeg::prime(
   const std::string maker = config.wallet_address.empty()
                                 ? "0x0000000000000000000000000000000000000001"
                                 : config.wallet_address;
+  const std::string signer = config.signer_address.empty() ? maker : config.signer_address;
   const std::string metadata =
       "0x0000000000000000000000000000000000000000000000000000000000000000";
   const std::string builder =
       "0x0000000000000000000000000000000000000000000000000000000000000000";
   const std::string owner = resolve_owner(config);
+  const std::string signature_placeholder =
+      "0x000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000";
+
+  token_id_ = token_id_in;
+  signature_type_ = config.signature_type;
+  maker_address_ = maker;
+  signer_address_ = signer;
 
   head_ = R"({"order":{"salt":")";
   mid_salt_ = R"(","maker":")";
@@ -80,13 +90,17 @@ void PreparedLeg::prime(
 
   mid_taker_ = R"(","side":")";
   mid_taker_ += is_buy_ ? "BUY" : "SELL";
-  mid_taker_ += R"(","signatureType":0,"timestamp":")";
+  mid_taker_ += R"(","signatureType":)";
+  mid_taker_ += std::to_string(signature_type_);
+  mid_taker_ += R"(,"timestamp":")";
 
   tail_ = R"(","metadata":")";
   tail_ += metadata;
   tail_ += R"(","builder":")";
   tail_ += builder;
-  tail_ += R"(","signature":"0x"},"owner":")";
+  tail_ += R"(","signature":")";
+  tail_ += signature_placeholder;
+  tail_ += R"("},"owner":")";
   tail_ += owner;
   tail_ += R"(","orderType":"FOK","postOnly":false})";
 }
@@ -173,6 +187,75 @@ bool OrderChamber::fire_into(
     return false;
   }
   return no_leg.fire_into(out.no, quantity_shares, salt + 1, timestamp_ms);
+}
+
+namespace {
+
+bool patch_signature(LegBodyBuffer& buffer, const std::string& signature) {
+  constexpr char marker[] = R"("signature":")";
+  if (signature.size() != 132) {
+    return false;
+  }
+  char* start = std::strstr(buffer.data, marker);
+  if (!start) {
+    return false;
+  }
+  char* sig_value = start + sizeof(marker) - 1;
+  std::memcpy(sig_value, signature.c_str(), 132);
+  return true;
+}
+
+}  // namespace
+
+bool PreparedLeg::sign_buffer(
+    LegBodyBuffer& buffer,
+    const Config& config,
+    bool neg_risk,
+    std::uint64_t salt,
+    std::int64_t timestamp_ms,
+    double quantity_shares) const {
+  if (!config.live_trading || config.private_key.empty()) {
+    return true;
+  }
+
+  const std::uint64_t share_units = to_share_units(quantity_shares);
+  const std::uint64_t maker_units =
+      is_buy_ ? collateral_units(share_units, price_units_) : share_units;
+  const std::uint64_t taker_units =
+      is_buy_ ? share_units : collateral_units(share_units, price_units_);
+
+  auth::OrderSignFields fields;
+  fields.salt = salt;
+  fields.maker = maker_address_;
+  fields.signer = signer_address_;
+  fields.token_id = token_id_;
+  fields.maker_amount = maker_units;
+  fields.taker_amount = taker_units;
+  fields.side = is_buy_ ? 0 : 1;
+  fields.signature_type = signature_type_;
+  fields.timestamp_ms = timestamp_ms;
+
+  try {
+    const std::string signature =
+        auth::sign_polymarket_order(fields, neg_risk, config.private_key);
+    return patch_signature(buffer, signature);
+  } catch (...) {
+    return false;
+  }
+}
+
+bool OrderChamber::sign_shot(
+    FiredShot& out,
+    const Config& config,
+    const BinaryMarket& market,
+    std::uint64_t salt,
+    std::int64_t timestamp_ms,
+    double quantity_shares) const {
+  if (!yes_leg.sign_buffer(out.yes, config, market.neg_risk, salt, timestamp_ms, quantity_shares)) {
+    return false;
+  }
+  return no_leg.sign_buffer(
+      out.no, config, market.neg_risk, salt + 1, timestamp_ms, quantity_shares);
 }
 
 void OrderChamberRegistry::prime_market(const BinaryMarket& market, const Config& config) {
