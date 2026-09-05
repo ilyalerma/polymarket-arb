@@ -24,6 +24,11 @@ class ClobClient {
       std::size_t body_len,
       const std::map<std::string, std::string>& auth_headers) const;
 
+  HttpResponse post_order_detailed(
+      const char* body,
+      std::size_t body_len,
+      const std::map<std::string, std::string>& auth_headers) const;
+
  private:
   HttpClient http_;
 };

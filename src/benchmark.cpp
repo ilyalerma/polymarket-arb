@@ -220,7 +220,7 @@ DryRunBenchmarkResult run_dry_trade_benchmark(
     if (has_api_creds) {
       auth_ms.push_back(time_call_ms([&] {
         headers = auth::build_l2_headers(
-            config.wallet_address,
+            config.signer_address.empty() ? config.wallet_address : config.signer_address,
             config.api_key,
             config.api_secret,
             config.api_passphrase,

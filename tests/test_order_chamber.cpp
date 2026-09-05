@@ -85,6 +85,25 @@ int main() {
   const auto* sell_chamber = registry.chamber_for(market.slug, pm::ArbKind::SellBoth);
   failures += !expect_true(buy_chamber != nullptr && sell_chamber != nullptr, "registry lookup failed");
 
+  pm::Config proxy_config = config;
+  proxy_config.wallet_address = "0x00000000000000000000000000000000000000aa";
+  proxy_config.signer_address = "0x00000000000000000000000000000000000000bb";
+  proxy_config.signature_type = 2;
+  pm::OrderChamber proxy_chamber;
+  proxy_chamber.prime(market, proxy_config, pm::ArbKind::BuyBoth);
+  proxy_chamber.aim(opp);
+  pm::FiredShot proxy_shot;
+  failures += !expect_true(
+      proxy_chamber.fire_into(proxy_shot, 12.0, 99, 1'713'398'400'000),
+      "proxy fire_into failed");
+  const auto proxy_json = nlohmann::json::parse(proxy_shot.yes.view());
+  failures += !expect_true(
+      proxy_json["order"]["maker"] == "0x00000000000000000000000000000000000000aa",
+      "proxy maker should be funder");
+  failures += !expect_true(
+      proxy_json["order"]["signer"] == "0x00000000000000000000000000000000000000bb",
+      "proxy signer should be EOA");
+
   if (failures == 0) {
     std::cout << "order chamber tests passed\n";
     return 0;

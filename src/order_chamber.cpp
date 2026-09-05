@@ -81,7 +81,7 @@ void PreparedLeg::prime(
   mid_salt_ = R"(","maker":")";
   mid_salt_ += maker;
   mid_salt_ += R"(","signer":")";
-  mid_salt_ += maker;
+  mid_salt_ += signer;
   mid_salt_ += R"(","tokenId":")";
   mid_salt_ += token_id_in;
   mid_salt_ += R"(","makerAmount":")";

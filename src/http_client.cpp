@@ -98,9 +98,22 @@ std::optional<std::string> HttpClient::post(
     const char* body,
     std::size_t body_len,
     const std::map<std::string, std::string>& headers) const {
+  const auto response = post_detailed(path, body, body_len, headers);
+  if (!response.ok()) {
+    return std::nullopt;
+  }
+  return response.body;
+}
+
+HttpResponse HttpClient::post_detailed(
+    const std::string& path,
+    const char* body,
+    std::size_t body_len,
+    const std::map<std::string, std::string>& headers) const {
+  HttpResponse result;
   CURL* curl = curl_easy_init();
   if (curl == nullptr) {
-    return std::nullopt;
+    return result;
   }
 
   const std::string url = build_url(base_url_, path, {});
@@ -108,7 +121,7 @@ std::optional<std::string> HttpClient::post(
   struct curl_slist* header_list = nullptr;
   header_list = curl_slist_append(header_list, "Content-Type: application/json");
   for (const auto& [key, value] : headers) {
-  const std::string header = key + ": " + value;
+    const std::string header = key + ": " + value;
     header_list = curl_slist_append(header_list, header.c_str());
   }
 
@@ -129,10 +142,10 @@ std::optional<std::string> HttpClient::post(
   curl_slist_free_all(header_list);
   curl_easy_cleanup(curl);
 
-  if (code != CURLE_OK || status < 200 || status >= 300) {
-    return std::nullopt;
-  }
-  return response;
+  result.transport_ok = code == CURLE_OK;
+  result.status_code = status;
+  result.body = std::move(response);
+  return result;
 }
 
 }  // namespace pm

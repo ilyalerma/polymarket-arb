@@ -57,7 +57,18 @@ std::optional<std::string> ClobClient::post_order(
     const char* body,
     std::size_t body_len,
     const std::map<std::string, std::string>& auth_headers) const {
-  return http_.post("/order", body, body_len, auth_headers);
+  const auto response = post_order_detailed(body, body_len, auth_headers);
+  if (!response.ok()) {
+    return std::nullopt;
+  }
+  return response.body;
+}
+
+HttpResponse ClobClient::post_order_detailed(
+    const char* body,
+    std::size_t body_len,
+    const std::map<std::string, std::string>& auth_headers) const {
+  return http_.post_detailed("/order", body, body_len, auth_headers);
 }
 
 }  // namespace pm
