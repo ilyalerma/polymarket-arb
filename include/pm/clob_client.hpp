@@ -15,6 +15,7 @@ class ClobClient {
   explicit ClobClient(HttpClient&& http);
 
   std::optional<TokenBook> fetch_book(const std::string& token_id) const;
+  std::uint32_t fetch_fee_rate_bps(const std::string& token_id) const;
   std::optional<std::string> post_order(
       const std::string& body,
       const std::map<std::string, std::string>& auth_headers) const;

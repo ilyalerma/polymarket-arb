@@ -7,7 +7,6 @@
 
 #include <array>
 #include <cstring>
-#include <memory>
 #include <stdexcept>
 #include <vector>
 
@@ -16,16 +15,14 @@ namespace pm::auth {
 namespace {
 
 constexpr char kDomainName[] = "Polymarket CTF Exchange";
-constexpr char kDomainVersion[] = "2";
+constexpr char kDomainVersion[] = "1";
 constexpr std::uint64_t kPolygonChainId = 137;
-constexpr char kCtfExchange[] = "0xE111180000d2663C0091e4f400237545B87B996B";
-constexpr char kNegRiskExchange[] = "0xe2222d279d744050d28e00520010520000310F59";
+constexpr char kCtfExchange[] = "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E";
+constexpr char kNegRiskExchange[] = "0xC5d563A36AE78145C45a50134d48A1215220f80a";
 constexpr char kOrderTypeString[] =
-    "Order(uint256 salt,address maker,address signer,uint256 tokenId,"
-    "uint256 makerAmount,uint256 takerAmount,uint8 side,uint8 signatureType,"
-    "uint256 timestamp,bytes32 metadata,bytes32 builder)";
-constexpr char kZeroBytes32[] =
-    "0x0000000000000000000000000000000000000000000000000000000000000000";
+    "Order(uint256 salt,address maker,address signer,address taker,uint256 tokenId,"
+    "uint256 makerAmount,uint256 takerAmount,uint256 expiration,uint256 nonce,"
+    "uint256 feeRateBps,uint8 side,uint8 signatureType)";
 
 secp256k1_context* signing_context() {
   static secp256k1_context* ctx =
@@ -104,16 +101,6 @@ Hash256 word_from_address(const std::string& address_hex) {
   return out;
 }
 
-Hash256 word_from_bytes32(const std::string& bytes32_hex) {
-  const auto bytes = hex_to_bytes(bytes32_hex);
-  if (bytes.size() != 32) {
-    throw std::runtime_error("invalid bytes32 length");
-  }
-  Hash256 out{};
-  std::memcpy(out.data(), bytes.data(), 32);
-  return out;
-}
-
 Hash256 domain_separator(bool neg_risk) {
   const Hash256 domain_type_hash = keccak256(
       "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
@@ -135,23 +122,22 @@ Hash256 domain_separator(bool neg_risk) {
 
 Hash256 order_struct_hash(const OrderSignFields& order) {
   const Hash256 type_hash = keccak256(kOrderTypeString);
-  const Hash256 metadata = word_from_bytes32(kZeroBytes32);
-  const Hash256 builder = word_from_bytes32(kZeroBytes32);
 
   std::vector<std::uint8_t> encoded;
-  encoded.reserve(32 * 12);
+  encoded.reserve(32 * 13);
   append_word32(encoded, type_hash);
   append_word32(encoded, word_from_u64(order.salt));
   append_word32(encoded, word_from_address(order.maker));
   append_word32(encoded, word_from_address(order.signer));
+  append_word32(encoded, word_from_address(order.taker));
   append_word32(encoded, word_from_u256_string(order.token_id));
   append_word32(encoded, word_from_u64(order.maker_amount));
   append_word32(encoded, word_from_u64(order.taker_amount));
+  append_word32(encoded, word_from_u64(order.expiration));
+  append_word32(encoded, word_from_u64(order.nonce));
+  append_word32(encoded, word_from_u64(order.fee_rate_bps));
   append_word32(encoded, word_from_u64(order.side));
   append_word32(encoded, word_from_u64(order.signature_type));
-  append_word32(encoded, word_from_u64(static_cast<std::uint64_t>(order.timestamp_ms)));
-  append_word32(encoded, metadata);
-  append_word32(encoded, builder);
   return keccak256(encoded);
 }
 

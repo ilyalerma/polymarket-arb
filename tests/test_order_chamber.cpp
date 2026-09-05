@@ -1,3 +1,4 @@
+#include "pm/order_amounts.hpp"
 #include "pm/order_chamber.hpp"
 #include "pm/types.hpp"
 
@@ -19,6 +20,7 @@ pm::BinaryMarket make_market() {
   market.yes_token_id = "111";
   market.no_token_id = "222";
   market.min_order_size = 5.0;
+  market.tick_size = 0.01;
   return market;
 }
 
@@ -61,9 +63,7 @@ int main() {
   failures += !expect_true(chamber.ready(), "chamber should be ready after aim");
 
   pm::FiredShot shot;
-  failures += !expect_true(
-      chamber.fire_into(shot, 12.0, 42, 1'713'398'400'000),
-      "fire_into failed");
+  failures += !expect_true(chamber.fire_into(shot, 12.0, 42), "fire_into failed");
   failures += !expect_true(shot.yes.size > 0 && shot.no.size > 0, "fire returned empty bodies");
 
   const auto yes_json = nlohmann::json::parse(shot.yes.view());
@@ -72,6 +72,12 @@ int main() {
   failures += !expect_true(yes_json["order"]["makerAmount"] == "5400000", "yes maker amount mismatch");
   failures += !expect_true(yes_json["order"]["takerAmount"] == "12000000", "yes taker amount mismatch");
   failures += !expect_true(yes_json["order"]["side"] == "BUY", "yes side mismatch");
+  failures += !expect_true(yes_json["order"]["expiration"] == "0", "expiration mismatch");
+  failures += !expect_true(yes_json["order"]["nonce"] == "0", "nonce mismatch");
+  failures += !expect_true(yes_json["order"]["feeRateBps"] == "0", "fee rate mismatch");
+  failures += !expect_true(
+      yes_json["order"]["taker"] == "0x0000000000000000000000000000000000000000",
+      "taker mismatch");
   failures += !expect_true(yes_json["orderType"] == "FOK", "order type mismatch");
 
   const auto no_json = nlohmann::json::parse(shot.no.view());
@@ -93,9 +99,7 @@ int main() {
   proxy_chamber.prime(market, proxy_config, pm::ArbKind::BuyBoth);
   proxy_chamber.aim(opp);
   pm::FiredShot proxy_shot;
-  failures += !expect_true(
-      proxy_chamber.fire_into(proxy_shot, 12.0, 99, 1'713'398'400'000),
-      "proxy fire_into failed");
+  failures += !expect_true(proxy_chamber.fire_into(proxy_shot, 12.0, 99), "proxy fire_into failed");
   const auto proxy_json = nlohmann::json::parse(proxy_shot.yes.view());
   failures += !expect_true(
       proxy_json["order"]["maker"] == "0x00000000000000000000000000000000000000aa",

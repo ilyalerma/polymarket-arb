@@ -83,6 +83,7 @@ add_library(pm_core
   src/benchmark.cpp
   src/game_state.cpp
   src/order_chamber.cpp
+  src/order_amounts.cpp
   src/market_tracker.cpp
 )
 

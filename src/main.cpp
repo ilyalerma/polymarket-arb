@@ -317,7 +317,7 @@ int main(int argc, char** argv) {
   }
 
   pm::OrderChamberRegistry chambers;
-  chambers.prime_all(markets, config);
+  chambers.prime_all(markets, config, &clob);
   if (config.verbose) {
     std::cout << "  order chambers primed: " << markets.size() << " market(s)\n";
   }
@@ -364,7 +364,7 @@ int main(int argc, char** argv) {
       if (config.lol_discover || !config.event_slug.empty()) {
         try {
           markets = load_markets(config, gamma);
-          chambers.prime_all(markets, config);
+          chambers.prime_all(markets, config, &clob);
           ws.set_markets(markets);
         } catch (const std::exception& ex) {
           std::cerr << "Market refresh failed: " << ex.what() << '\n';
@@ -381,7 +381,7 @@ int main(int argc, char** argv) {
     if (config.lol_discover || !config.event_slug.empty()) {
       try {
         markets = load_markets(config, gamma);
-        chambers.prime_all(markets, config);
+        chambers.prime_all(markets, config, &clob);
       } catch (const std::exception& ex) {
         std::cerr << "Market refresh failed: " << ex.what() << '\n';
       }

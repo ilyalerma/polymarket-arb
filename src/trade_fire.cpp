@@ -5,8 +5,10 @@
 #include <chrono>
 #include <ctime>
 #include <iostream>
+#include <mutex>
 #include <string>
 #include <thread>
+#include <unordered_map>
 
 namespace pm {
 
@@ -37,6 +39,21 @@ void log_trade_line(const std::string& message) {
 
 const std::string& l2_auth_address(const Config& config) {
   return config.signer_address.empty() ? config.wallet_address : config.signer_address;
+}
+
+bool fire_cooldown_active(const std::string& key) {
+  static std::mutex mutex;
+  static std::unordered_map<std::string, std::chrono::steady_clock::time_point> last_fire;
+  static constexpr auto kCooldown = std::chrono::seconds(2);
+
+  const auto now = std::chrono::steady_clock::now();
+  std::lock_guard lock(mutex);
+  const auto it = last_fire.find(key);
+  if (it != last_fire.end() && now - it->second < kCooldown) {
+    return true;
+  }
+  last_fire[key] = now;
+  return false;
 }
 
 HttpResponse post_leg(
@@ -87,6 +104,11 @@ void try_fire_arb(
     return;
   }
 
+  const std::string cooldown_key = opp.market.slug + ":" + arb_kind_name(opp.kind);
+  if (fire_cooldown_active(cooldown_key)) {
+    return;
+  }
+
   if (!chamber->ready()) {
     log_trade_line(
         "skip " + arb_kind_name(opp.kind) + " [" + opp.market.slug +
@@ -95,14 +117,13 @@ void try_fire_arb(
   }
 
   const auto salt = next_order_salt();
-  const auto timestamp_ms = current_timestamp_ms();
   FiredShot shot;
-  if (!chamber->fire_into(shot, opp.max_size, salt, timestamp_ms)) {
+  if (!chamber->fire_into(shot, opp.max_size, salt)) {
     log_trade_line(
         "skip " + arb_kind_name(opp.kind) + " [" + opp.market.slug + "] — fire_into failed");
     return;
   }
-  if (!chamber->sign_shot(shot, config, opp.market, salt, timestamp_ms, opp.max_size)) {
+  if (!chamber->sign_shot(shot, config, opp.market, salt, opp.max_size)) {
     log_trade_line(
         "skip " + arb_kind_name(opp.kind) + " [" + opp.market.slug + "] — sign_shot failed");
     return;

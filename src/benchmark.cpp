@@ -55,7 +55,7 @@ std::string build_stub_order_body(const BinaryMarket& market, const ArbOpportuni
   chamber.prime(market, Config{}, opp.kind);
   chamber.aim(opp);
   FiredShot shot;
-  if (!chamber.fire_into(shot, opp.max_size, next_order_salt(), current_timestamp_ms())) {
+  if (!chamber.fire_into(shot, opp.max_size, next_order_salt())) {
     return {};
   }
   return std::string(shot.yes.view());
@@ -131,7 +131,7 @@ DryRunBenchmarkResult run_dry_trade_benchmark(
   total_ms.reserve(config.benchmark_iterations);
 
   OrderChamberRegistry registry;
-  registry.prime_all({market}, config);
+  registry.prime_all({market}, config, nullptr);
   OrderChamber* chamber = registry.chamber_for(market.slug, ArbKind::BuyBoth);
 
   for (std::uint32_t i = 0; i < config.benchmark_iterations; ++i) {
@@ -210,8 +210,7 @@ DryRunBenchmarkResult run_dry_trade_benchmark(
         return;
       }
       FiredShot shot;
-      if (chamber->fire_into(
-              shot, shot_opp.max_size, next_order_salt(), current_timestamp_ms())) {
+      if (chamber->fire_into(shot, shot_opp.max_size, next_order_salt())) {
         order_body.assign(shot.yes.data, shot.yes.size);
       }
     }));

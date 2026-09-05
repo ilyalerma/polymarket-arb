@@ -47,6 +47,24 @@ std::optional<TokenBook> ClobClient::fetch_book(const std::string& token_id) con
   return book;
 }
 
+std::uint32_t ClobClient::fetch_fee_rate_bps(const std::string& token_id) const {
+  const auto response = http_.get("/fee-rate", {{"token_id", token_id}});
+  if (!response) {
+    return 0;
+  }
+  try {
+    const json body = json::parse(*response);
+    if (body.contains("base_fee")) {
+      if (body.at("base_fee").is_string()) {
+        return static_cast<std::uint32_t>(std::stoul(body.at("base_fee").get<std::string>()));
+      }
+      return body.at("base_fee").get<std::uint32_t>();
+    }
+  } catch (...) {
+  }
+  return 0;
+}
+
 std::optional<std::string> ClobClient::post_order(
     const std::string& body,
     const std::map<std::string, std::string>& auth_headers) const {
