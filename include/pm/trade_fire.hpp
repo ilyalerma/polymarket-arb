@@ -12,4 +12,12 @@ void try_fire_arb(
     OrderChamberRegistry& chambers,
     const ArbOpportunity& opp);
 
+bool fire_test_buy(
+    const Config& config,
+    ClobClient& clob,
+    const BinaryMarket& market,
+    bool buy_yes,
+    double size_shares,
+    double limit_price);
+
 }  // namespace pm

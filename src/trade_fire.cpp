@@ -140,4 +140,49 @@ void try_fire_arb(
   no_thread.join();
 }
 
+bool fire_test_buy(
+    const Config& config,
+    ClobClient& clob,
+    const BinaryMarket& market,
+    const bool buy_yes,
+    const double size_shares,
+    const double limit_price) {
+  if (!config.live_trading) {
+    log_trade_line("skip test buy — PM_LIVE_TRADING is off");
+    return false;
+  }
+
+  const auto token_id = buy_yes ? market.yes_token_id : market.no_token_id;
+  const auto outcome = buy_yes ? market.yes_outcome : market.no_outcome;
+  const auto fee_rate_bps = clob.fetch_fee_rate_bps(token_id);
+
+  PreparedLeg leg;
+  leg.prime(config, token_id, OrderSide::Buy, market.tick_size, fee_rate_bps);
+  leg.aim(limit_price);
+
+  if (!leg.ready()) {
+    log_trade_line("skip test buy — leg not ready");
+    return false;
+  }
+
+  const auto salt = next_order_salt();
+  LegBodyBuffer body;
+  if (!leg.fire_into(body, size_shares, salt)) {
+    log_trade_line("skip test buy — fire_into failed");
+    return false;
+  }
+  if (!leg.sign_buffer(body, config, market.neg_risk, salt, size_shares)) {
+    log_trade_line("skip test buy — sign failed");
+    return false;
+  }
+
+  log_trade_line(
+      "test buy " + outcome + " [" + market.slug + "] size=" + std::to_string(size_shares) +
+      " @ " + std::to_string(limit_price) + " (~$" + std::to_string(size_shares * limit_price) +
+      ")");
+
+  const auto response = post_leg(clob, config, buy_yes ? "yes" : "no", body);
+  return response.ok();
+}
+
 }  // namespace pm

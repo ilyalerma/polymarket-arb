@@ -7,6 +7,7 @@
 #include "pm/game_state.hpp"
 #include "pm/gamma_client.hpp"
 #include "pm/market_tracker.hpp"
+#include "pm/order_book.hpp"
 #include "pm/order_chamber.hpp"
 #include "pm/trade_fire.hpp"
 #include "pm/ws/market_ws.hpp"
@@ -17,6 +18,7 @@
 #include <ctime>
 #include <iomanip>
 #include <iostream>
+#include <algorithm>
 #include <unordered_map>
 #include <unordered_set>
 #include <regex>
@@ -154,6 +156,78 @@ std::vector<pm::BinaryMarket> load_markets(
   return gamma.fetch_active_markets(config.market_limit);
 }
 
+const pm::BinaryMarket* find_game_market(
+    const std::vector<pm::BinaryMarket>& markets,
+    std::uint32_t game_number) {
+  for (const auto& market : markets) {
+    if (market.market_kind != pm::MarketKind::GameWinner) {
+      continue;
+    }
+    const auto num = pm::parse_game_number(market);
+    if (num && *num == game_number) {
+      return &market;
+    }
+  }
+  return nullptr;
+}
+
+bool run_test_fire(
+    const pm::Config& config,
+    pm::ClobClient& clob,
+    const std::vector<pm::BinaryMarket>& markets,
+    std::uint32_t game_number,
+    double usd) {
+  const auto* market = find_game_market(markets, game_number);
+  if (market == nullptr) {
+    std::cerr << "Game " << game_number << " winner market not found in loaded set\n";
+    return false;
+  }
+
+  const auto yes_book = clob.fetch_book(market->yes_token_id);
+  const auto no_book = clob.fetch_book(market->no_token_id);
+  if (!yes_book || !no_book) {
+    std::cerr << "Failed to fetch order books for " << market->slug << '\n';
+    return false;
+  }
+
+  pm::MarketBooks books;
+  books.yes.update(*yes_book);
+  books.no.update(*no_book);
+
+  const auto yes_bid = books.yes.best_bid();
+  const auto yes_ask = books.yes.best_ask();
+  const auto no_bid = books.no.best_bid();
+  const auto no_ask = books.no.best_ask();
+  if (!yes_bid || !yes_ask || !no_bid || !no_ask) {
+    std::cerr << "Incomplete book for " << market->slug << '\n';
+    return false;
+  }
+
+  const bool buy_yes = *yes_bid >= *no_bid;
+  const double limit_price = buy_yes ? *yes_ask : *no_ask;
+  const auto depth =
+      buy_yes ? books.yes.depth_at_ask(limit_price) : books.no.depth_at_ask(limit_price);
+
+  double size_shares = usd / std::max(limit_price, 1e-9);
+  if (depth) {
+    size_shares = std::min(size_shares, *depth);
+  }
+  if (size_shares < market->min_order_size) {
+    size_shares = market->min_order_size;
+  }
+
+  const std::string& outcome = buy_yes ? market->yes_outcome : market->no_outcome;
+
+  std::cout << std::fixed << std::setprecision(4)
+            << "Test fire on " << market->question << " [" << market->slug << "]\n"
+            << "  favorite: " << outcome << " (yes_bid=" << *yes_bid << " no_bid=" << *no_bid
+            << ")\n"
+            << "  order: BUY " << size_shares << " @ " << limit_price << " (~$"
+            << size_shares * limit_price << ")\n";
+
+  return pm::fire_test_buy(config, clob, *market, buy_yes, size_shares, limit_price);
+}
+
 void scan_markets(
     const pm::Config& config,
     const std::vector<pm::BinaryMarket>& markets,
@@ -258,6 +332,9 @@ int main(int argc, char** argv) {
   std::signal(SIGTERM, on_signal);
 
   pm::Config config;
+  bool test_fire_mode = false;
+  double test_fire_usd = 5.0;
+  std::uint32_t test_fire_game = 4;
   try {
     config = pm::load_config_from_env();
     for (int i = 1; i < argc; ++i) {
@@ -266,6 +343,12 @@ int main(int argc, char** argv) {
         config.benchmark_mode = true;
       } else if (arg == "--benchmark-book") {
         config.book_benchmark_mode = true;
+      } else if (arg == "--test-fire") {
+        test_fire_mode = true;
+      } else if (arg == "--usd" && i + 1 < argc) {
+        test_fire_usd = std::stod(argv[++i]);
+      } else if (arg == "--game" && i + 1 < argc) {
+        test_fire_game = static_cast<std::uint32_t>(std::stoul(argv[++i]));
       } else if (arg == "--lol") {
         config.lol_discover = true;
       } else if (arg == "--event" && i + 1 < argc) {
@@ -283,8 +366,13 @@ int main(int argc, char** argv) {
     }
 
     if (config.market_slug.empty() && config.event_slug.empty() && !config.benchmark_mode &&
-        !config.book_benchmark_mode) {
+        !config.book_benchmark_mode && !test_fire_mode) {
       config.lol_discover = true;
+    }
+
+    if (test_fire_mode && config.event_slug.empty() && config.market_slug.empty()) {
+      config.event_slug = "lol-ig1-tes-2026-09-05";
+      config.lol_discover = false;
     }
   } catch (const std::exception& ex) {
     std::cerr << "Config error: " << ex.what() << '\n';
@@ -304,10 +392,16 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  if (markets.empty() && !config.benchmark_mode && !config.book_benchmark_mode) {
+  if (markets.empty() && !config.benchmark_mode && !config.book_benchmark_mode &&
+      !test_fire_mode) {
     std::cerr << "No tradeable LoL moneyline or game-winner markets found.\n"
               << "Try PM_LOL_LIVE_ONLY=0 or set PM_EVENT_SLUG to a specific match.\n";
     return 1;
+  }
+
+  if (test_fire_mode) {
+    const bool ok = run_test_fire(config, clob, markets, test_fire_game, test_fire_usd);
+    return ok ? 0 : 1;
   }
 
   print_startup_banner(config, markets);
