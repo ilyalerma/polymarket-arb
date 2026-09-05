@@ -1,4 +1,5 @@
 #include "pm/game_state.hpp"
+#include "pm/market_tracker.hpp"
 #include "pm/order_book.hpp"
 #include "pm/types.hpp"
 
@@ -109,6 +110,42 @@ int main() {
   watch = pm::compute_sequential_watch_target(4, resolutions, available);
   if (!watch.watch_moneyline) {
     std::cerr << "expected moneyline for BO5 game 5 decider\n";
+    return 1;
+  }
+
+  pm::Config config;
+  config.focus_current_game = true;
+  pm::GameTracker tracker;
+  pm::BinaryMarket game1;
+  game1.slug = "lol-test-event-game1";
+  game1.event_slug = "lol-test-event";
+  game1.condition_id = "cond-game1";
+  game1.market_kind = pm::MarketKind::GameWinner;
+  game1.group_title = "Game 1 Winner";
+  game1.yes_outcome = "Team A";
+  game1.no_outcome = "Team B";
+  game1.max_listed_game = 2;
+
+  std::unordered_map<std::string, pm::MarketBooks> books;
+  books[game1.condition_id] = make_books(0.44, 0.45, 0.55, 0.56);
+
+  tracker = pm::build_game_tracker(config, {game1}, books, tracker);
+  if (!pm::should_scan_for_arb(config, game1, tracker)) {
+    std::cerr << "expected open game 1 to be scanned\n";
+    return 1;
+  }
+
+  books[game1.condition_id] = make_books(0.99, 0.99, 0.99, 0.01);
+  tracker = pm::build_game_tracker(config, {game1}, books, tracker);
+  if (pm::should_scan_for_arb(config, game1, tracker)) {
+    std::cerr << "expected finished game 1 to stop scanning\n";
+    return 1;
+  }
+
+  books[game1.condition_id] = make_books(0.44, 0.45, 0.55, 0.56);
+  tracker = pm::build_game_tracker(config, {game1}, books, tracker);
+  if (pm::should_scan_for_arb(config, game1, tracker)) {
+    std::cerr << "expected finished game to stay finished after book reopens\n";
     return 1;
   }
 

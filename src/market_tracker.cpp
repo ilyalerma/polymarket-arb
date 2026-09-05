@@ -150,10 +150,20 @@ GameTracker build_game_tracker(
     const auto prior =
         prior_it == tracker.resolution_by_slug.end() ? GameResolution::Open : prior_it->second;
 
-    tracker.resolution_by_slug[snap.market.slug] = snap.resolution.state;
+    const GameResolution effective =
+        prior != GameResolution::Open ? prior : snap.resolution.state;
+    tracker.resolution_by_slug[snap.market.slug] = effective;
 
-    if (prior == GameResolution::Open && snap.resolution.state != GameResolution::Open) {
-      print_game_finished(snap.market, snap.resolution);
+    if (prior == GameResolution::Open && effective != GameResolution::Open) {
+      GameResolutionResult finished;
+      finished.state = effective;
+      finished.winner_outcome = snap.resolution.winner_outcome;
+      if (finished.winner_outcome.empty()) {
+        finished.winner_outcome =
+            effective == GameResolution::OutcomeOneWon ? snap.market.yes_outcome
+                                                     : snap.market.no_outcome;
+      }
+      print_game_finished(snap.market, finished);
     }
 
     const auto game_num = parse_game_number(snap.market);
@@ -162,7 +172,7 @@ GameTracker build_game_tracker(
     }
 
     available_games_by_event[snap.market.event_slug].insert(*game_num);
-    game_resolutions_by_event[snap.market.event_slug][*game_num] = snap.resolution.state;
+    game_resolutions_by_event[snap.market.event_slug][*game_num] = effective;
   }
 
   for (const auto& [event_slug, game_resolutions] : game_resolutions_by_event) {
